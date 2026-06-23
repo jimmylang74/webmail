@@ -5,6 +5,7 @@ import email.utils
 import imaplib
 import poplib
 import re
+import smtplib
 import time
 from datetime import datetime
 from email.header import decode_header
@@ -321,6 +322,7 @@ def fetch_emails(server_id: int) -> dict:
             owner_id,
             email_data["sender"],
             email_data["sender_name"],
+            conn=conn,
         )
 
         # Get/re-classify importance based on actual content
@@ -382,6 +384,111 @@ def fetch_emails(server_id: int) -> dict:
     conn.close()
 
     return {"success": True, "fetched": stored_count}
+
+
+def test_server_connection(server_config: dict) -> dict:
+    """Test connection to an email server (incoming + outgoing).
+
+    Tests POP3/IMAP incoming connection (connect + login + logout),
+    and SMTP outgoing connection if configured.
+
+    Returns dict with per-protocol results.
+    """
+    results = {}
+
+    try:
+        proto = server_config["incoming_protocol"].upper()
+        if proto == "POP3":
+            if server_config["use_ssl"]:
+                server = poplib.POP3_SSL(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 995,
+                    timeout=15,
+                )
+            else:
+                server = poplib.POP3(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 110,
+                    timeout=15,
+                )
+            server.user(server_config["username"])
+            server.pass_(server_config["password"])
+            server.quit()
+            results["incoming"] = {
+                "success": True,
+                "message": f"POP3 {server_config['incoming_server']}: connection and login OK",
+            }
+        elif proto == "IMAP":
+            if server_config["use_ssl"]:
+                server = imaplib.IMAP4_SSL(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 993,
+                    timeout=15,
+                )
+            else:
+                server = imaplib.IMAP4(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 143,
+                    timeout=15,
+                )
+            server.login(server_config["username"], server_config["password"])
+            server.select("INBOX")
+            server.close()
+            server.logout()
+            results["incoming"] = {
+                "success": True,
+                "message": f"IMAP {server_config['incoming_server']}: connection, login and INBOX select OK",
+            }
+        else:
+            results["incoming"] = {
+                "success": False,
+                "message": f"Unsupported protocol: {proto}",
+            }
+    except Exception as e:
+        results["incoming"] = {
+            "success": False,
+            "message": f"{server_config.get('incoming_protocol', '?')} connection failed: {e}",
+        }
+
+    outgoing = (server_config.get("outgoing_server") or "").strip()
+    if outgoing:
+        try:
+            smtp_port = server_config["outgoing_port"] or (465 if server_config["use_ssl"] else 587)
+
+            if server_config["use_ssl"]:
+                smtp = smtplib.SMTP_SSL(
+                    server_config["outgoing_server"],
+                    smtp_port,
+                    timeout=15,
+                )
+            else:
+                smtp = smtplib.SMTP(
+                    server_config["outgoing_server"],
+                    smtp_port,
+                    timeout=15,
+                )
+                smtp.starttls()
+
+            smtp.login(server_config["username"], server_config["password"])
+            smtp.quit()
+            results["outgoing"] = {
+                "success": True,
+                "message": f"SMTP {server_config['outgoing_server']}:{smtp_port} connection and login OK",
+            }
+        except Exception as e:
+            results["outgoing"] = {
+                "success": False,
+                "message": f"SMTP connection failed: {e}",
+            }
+    else:
+        results["outgoing"] = {
+            "success": False,
+            "message": "SMTP server not configured",
+        }
+
+    # Overall success = incoming success (outgoing is optional)
+    results["success"] = results["incoming"]["success"]
+    return results
 
 
 def fetch_all_for_user(user_id: int) -> list:

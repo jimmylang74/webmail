@@ -38,6 +38,7 @@ async function loadServers() {
         </div>
         <div class="server-actions">
           <button class="btn btn-sm btn-outline" onclick="editServer(${srv.id})">&#9998;</button>
+          <button class="btn btn-sm btn-outline" onclick="testServer(${srv.id})" title="${__('Test Server Connection')}">&#9881;</button>
           <button class="btn btn-sm btn-outline" onclick="fetchServer(${srv.id})">&#8635;</button>
           <button class="btn btn-sm btn-danger" onclick="deleteServer(${srv.id})">&#128465;</button>
         </div>
@@ -112,6 +113,50 @@ async function saveServer(e) {
     await loadServers();
   } catch (err) {
     document.getElementById('serverError').textContent = err.message;
+  }
+}
+
+async function testServer(id) {
+  const btn = event && event.target ? event.target : document.querySelector(`button[onclick*="testServer(${id})"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+
+  try {
+    const result = await api(`/api/servers/${id}/test`, { method: 'POST' });
+
+    let html = '';
+    const incoming = result.incoming || {};
+    const outgoing = result.outgoing || {};
+
+    html += `<div class="test-result-item ${incoming.success ? 'test-ok' : 'test-fail'}">
+      <span class="test-icon">${incoming.success ? '&#10003;' : '&#10007;'}</span>
+      <div class="test-result-text">
+        <strong>${__('Incoming Server')}</strong>
+        <p>${escHtml(incoming.message || '')}</p>
+      </div>
+    </div>`;
+
+    html += `<div class="test-result-item ${outgoing.success ? 'test-ok' : 'test-fail'}">
+      <span class="test-icon">${outgoing.success ? '&#10003;' : '&#10007;'}</span>
+      <div class="test-result-text">
+        <strong>${__('Outgoing (SMTP)')}</strong>
+        <p>${escHtml(outgoing.message || '')}</p>
+      </div>
+    </div>`;
+
+    document.getElementById('testResultContent').innerHTML = html;
+    document.getElementById('testResultModal').style.display = 'flex';
+  } catch (err) {
+    document.getElementById('testResultContent').innerHTML =
+      `<div class="test-result-item test-fail">
+        <span class="test-icon">&#10007;</span>
+        <div class="test-result-text">
+          <strong>${__('Error')}</strong>
+          <p>${escHtml(err.message)}</p>
+        </div>
+      </div>`;
+    document.getElementById('testResultModal').style.display = 'flex';
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#9881;'; }
   }
 }
 

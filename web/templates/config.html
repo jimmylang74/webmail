@@ -132,6 +132,22 @@
     </div>
   </div>
 
+  <!-- Test Result Modal -->
+  <div id="testResultModal" class="modal" style="display:none;">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3>{{ T('Server Connection Test') }}</h3>
+        <button class="modal-close" onclick="document.getElementById('testResultModal').style.display='none'">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="testResultContent" class="test-result-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" onclick="document.getElementById('testResultModal').style.display='none'">{{ T('OK') }}</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Forward Rule Modal -->
   <div id="forwardModal" class="modal" style="display:none;">
     <div class="modal-content modal-sm">

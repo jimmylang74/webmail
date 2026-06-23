@@ -181,7 +181,6 @@ async function loadEmails() {
   detailView.style.display = 'none';
   composeView.style.display = 'none';
   listView.style.display = 'flex';
-
   const listEl = document.getElementById('emailList');
   listEl.innerHTML = '<div class="loading">' + __('Loading emails') + '</div>';
 
@@ -248,7 +247,6 @@ async function openEmail(emailId) {
     const email = data.email;
     currentState.currentEmailId = emailId;
 
-    document.getElementById('emailListView').style.display = 'none';
     document.getElementById('composeView').style.display = 'none';
     const detailView = document.getElementById('emailDetailView');
     detailView.style.display = 'flex';
@@ -256,7 +254,8 @@ async function openEmail(emailId) {
     const detailEl = document.getElementById('emailDetail');
     const date = email.received_date ? new Date(email.received_date).toLocaleString() : '';
     const senderDisplay = email.sender_name || email.sender;
-    const bodyContent = email.body_text || __('(No content)');
+    const hasHtml = !!(email.body_html && email.body_html.trim());
+    const textContent = email.body_text || __('(No content)');
 
     detailEl.innerHTML = `
       <div class="email-detail-header">
@@ -268,11 +267,38 @@ async function openEmail(emailId) {
           ${email.server_badge ? `<dt>${__('Server:')}</dt><dd><span class="email-badge">${escHtml(email.server_badge)}</span></dd>` : ''}
         </dl>
       </div>
-      <div class="email-detail-body">${escHtml(bodyContent)}</div>
+      <div class="email-detail-body-wrapper"></div>
     `;
 
-    // Refresh tree to update unread counts
-    loadTree();
+    const bodyWrapper = detailEl.querySelector('.email-detail-body-wrapper');
+    if (hasHtml) {
+      const iframe = document.createElement('iframe');
+      iframe.className = 'email-detail-body-html';
+      iframe.sandbox = 'allow-same-origin';
+      iframe.srcdoc = email.body_html;
+      iframe.addEventListener('load', () => {
+        try {
+          const doc = iframe.contentDocument || iframe.contentWindow.document;
+          iframe.style.height = doc.documentElement.scrollHeight + 'px';
+        } catch (_) {}
+      });
+      bodyWrapper.appendChild(iframe);
+    } else {
+      const bodyDiv = document.createElement('div');
+      bodyDiv.className = 'email-detail-body';
+      bodyDiv.textContent = textContent;
+      bodyWrapper.appendChild(bodyDiv);
+    }
+
+    // Refresh tree to update unread counts without resetting the view
+    try {
+      const treeData = await api('/api/mailbox/tree');
+      const container = document.getElementById('treeMenu');
+      container.innerHTML = '';
+      treeData.folders.forEach(folder => {
+        container.appendChild(createTreeItem(folder));
+      });
+    } catch (_) {}
   } catch (err) {
     alert(__('Failed to load email: {0}', err.message));
   }
@@ -280,7 +306,6 @@ async function openEmail(emailId) {
 
 function backToList() {
   document.getElementById('emailDetailView').style.display = 'none';
-  document.getElementById('emailListView').style.display = 'flex';
   currentState.currentEmailId = null;
   loadEmails();
 }
@@ -344,7 +369,9 @@ function composeNew() {
 function showCompose(forwardText) {
   document.getElementById('emailListView').style.display = 'none';
   document.getElementById('emailDetailView').style.display = 'none';
-  document.getElementById('composeView').style.display = 'flex';
+  const composeView = document.getElementById('composeView');
+  composeView.style.display = 'flex';
+  composeView.style.flex = '1';
   document.getElementById('composeTo').value = '';
   document.getElementById('composeSubject').value = forwardText ? __('Fwd: {0}', forwardText) : '';
   document.getElementById('composeBody').value = '';
@@ -352,7 +379,9 @@ function showCompose(forwardText) {
 }
 
 function closeCompose() {
-  document.getElementById('composeView').style.display = 'none';
+  const composeView = document.getElementById('composeView');
+  composeView.style.display = 'none';
+  composeView.style.flex = '';
   document.getElementById('emailListView').style.display = 'flex';
   loadEmails();
 }

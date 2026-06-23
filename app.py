@@ -37,7 +37,7 @@ from modules.email_classify import (
     auto_classify_senders,
     classify_unclassified_emails,
 )
-from modules.email_fetch import fetch_all_for_user, fetch_emails
+from modules.email_fetch import fetch_all_for_user, fetch_emails, test_server_connection
 from modules.email_send import save_draft, send_email
 from modules.forward import (
     create_forward_rule,
@@ -362,25 +362,48 @@ def api_delete_server(server_id):
 @app.route("/api/servers/<int:server_id>/fetch", methods=["POST"])
 @login_required
 def api_fetch_server(server_id):
+    user_id = session["user_id"]
+
     def _fetch_and_fwd():
         result = fetch_emails(server_id)
         if result.get("success"):
-            classify_unclassified_emails(session["user_id"])
-            auto_classify_senders(session["user_id"])
+            classify_unclassified_emails(user_id)
+            auto_classify_senders(user_id)
 
-    # Run in background to avoid timeout
     thread = threading.Thread(target=_fetch_and_fwd, daemon=True)
     thread.start()
     return jsonify({"success": True, "message": "Fetch started"})
 
 
+@app.route("/api/servers/<int:server_id>/test", methods=["POST"])
+@login_required
+def api_test_server(server_id):
+    """Test a server configuration (incoming POP3/IMAP + optional SMTP)."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM email_servers WHERE id=? AND user_id=?",
+        (server_id, session["user_id"]),
+    )
+    server = cursor.fetchone()
+    conn.close()
+
+    if not server:
+        return jsonify({"success": False, "error": "Server not found"}), 404
+
+    result = test_server_connection(dict(server))
+    return jsonify(result)
+
+
 @app.route("/api/fetch-all", methods=["POST"])
 @login_required
 def api_fetch_all():
+    user_id = session["user_id"]
+
     def _fetch_all_and_fwd():
-        results = fetch_all_for_user(session["user_id"])
-        classify_unclassified_emails(session["user_id"])
-        auto_classify_senders(session["user_id"])
+        results = fetch_all_for_user(user_id)
+        classify_unclassified_emails(user_id)
+        auto_classify_senders(user_id)
 
     thread = threading.Thread(target=_fetch_all_and_fwd, daemon=True)
     thread.start()

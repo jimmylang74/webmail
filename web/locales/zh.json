@@ -148,5 +148,10 @@
 
   "Email Client - Admin Panel": "邮件客户端 - 管理面板",
   "Email Client - Server Config": "邮件客户端 - 服务器配置",
-  "Group by Server": "按服务器分组"
+  "Group by Server": "按服务器分组",
+  "Test Server Connection": "测试服务器连接",
+  "Server Connection Test": "服务器连接测试",
+  "Incoming Server": "收件服务器",
+  "Outgoing (SMTP)": "发件 (SMTP)",
+  "OK": "确定"
 }

@@ -95,15 +95,16 @@ def classify_email(sender: str, sender_name: str, subject: str, body_text: str) 
     return "Normal"
 
 
-def get_or_create_sender_group(user_id: int, sender: str, sender_name: str) -> dict:
+def get_or_create_sender_group(user_id: int, sender: str, sender_name: str, conn=None) -> dict:
     """Get or create a sender group for a given sender email.
 
     Auto-classifies as Ad/Normal/Important and assigns importance group.
     """
-    conn = get_user_db(user_id)
+    own_conn = conn is None
+    if own_conn:
+        conn = get_user_db(user_id)
     cursor = conn.cursor()
 
-    # Check if sender group already exists
     cursor.execute(
         "SELECT sg.*, ig.name as importance_name FROM sender_groups sg "
         "LEFT JOIN importance_groups ig ON sg.importance_group_id = ig.id "
@@ -112,14 +113,13 @@ def get_or_create_sender_group(user_id: int, sender: str, sender_name: str) -> d
     )
     existing = cursor.fetchone()
     if existing:
-        conn.close()
+        if own_conn:
+            conn.close()
         return dict(existing)
 
-    # Auto-classify the sender
     importance = classify_email(sender, sender_name, "", "")
     group_name = sender.split("@")[0] if "@" in sender else sender
 
-    # Get importance group
     cursor.execute(
         "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
         (user_id, importance),
@@ -132,7 +132,6 @@ def get_or_create_sender_group(user_id: int, sender: str, sender_name: str) -> d
         "VALUES (?, ?, ?, ?, ?, 1)",
         (user_id, sender, sender_name, group_name, imp_id),
     )
-    conn.commit()
     new_id = cursor.lastrowid
 
     cursor.execute(
@@ -142,7 +141,9 @@ def get_or_create_sender_group(user_id: int, sender: str, sender_name: str) -> d
         (new_id,),
     )
     row = cursor.fetchone()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
     return dict(row)
 
 
