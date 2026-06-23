@@ -1,0 +1,904 @@
+"""Email Client - Main Flask Application.
+
+A web-based email client with POP3/IMAP support, automatic email classification,
+sender grouping, and auto-forwarding rules.
+"""
+
+import json
+import os
+import threading
+from datetime import datetime
+from functools import wraps
+
+from flask import (
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+
+from modules.config import Config
+from modules import init_db, get_user_db
+from modules.i18n import set_language, T, get_locale_json
+from modules.auth import (
+    authenticate,
+    change_password,
+    create_user,
+    delete_user,
+    get_importance_groups,
+    get_user,
+    init_default_admin,
+    list_users,
+)
+from modules.email_classify import (
+    auto_classify_senders,
+    classify_unclassified_emails,
+)
+from modules.email_fetch import fetch_all_for_user, fetch_emails
+from modules.email_send import save_draft, send_email
+from modules.forward import (
+    create_forward_rule,
+    delete_forward_rule,
+    get_forward_rules,
+    process_forward_rules,
+    update_forward_rule,
+)
+
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
+
+app = Flask(
+    __name__,
+    template_folder="web/templates",
+    static_folder="web/static",
+)
+app.config.from_object(Config)
+app.config["SECRET_KEY"] = Config.SECRET_KEY
+
+set_language(Config.LANGUAGE)
+
+
+@app.context_processor
+def inject_i18n():
+    return dict(lang=Config.LANGUAGE, T=T, locale_json=get_locale_json(Config.LANGUAGE))
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def login_required(f):
+    """Decorator: require valid user session."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_required(f):
+    """Decorator: require admin role."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login_page"))
+        if session.get("role") != "admin":
+            return jsonify({"error": "Admin access required"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def json_body(f):
+    """Decorator: parse JSON request body."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not request.is_json:
+            return jsonify({"error": "JSON body required"}), 400
+        return f(*args, **kwargs)
+    return decorated
+
+
+def _folder_stats(user_id: int):
+    """Return counts for each folder."""
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    stats = {}
+    for folder in ("inbox", "outbox", "drafts", "deleted"):
+        cursor.execute(
+            "SELECT COUNT(*) FROM emails WHERE user_id = ? AND folder = ?",
+            (user_id, folder),
+        )
+        stats[folder] = cursor.fetchone()[0]
+    # Unread inbox count
+    cursor.execute(
+        "SELECT COUNT(*) FROM emails WHERE user_id = ? AND folder = 'inbox' AND is_read = 0",
+        (user_id,),
+    )
+    stats["unread"] = cursor.fetchone()[0]
+    conn.close()
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Page routes
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    if "user_id" in session:
+        return redirect(url_for("mail_page"))
+    return redirect(url_for("login_page"))
+
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    return render_template("login.html", port=Config.LOGIN_PORT)
+
+
+@app.route("/admin", methods=["GET"])
+@login_required
+@admin_required
+def admin_page():
+    return render_template("admin.html")
+
+
+@app.route("/mail", methods=["GET"])
+@login_required
+def mail_page():
+    return render_template("mail.html")
+
+
+@app.route("/config", methods=["GET"])
+@login_required
+def config_page():
+    return render_template("config.html")
+
+
+# ---------------------------------------------------------------------------
+# Auth API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/login", methods=["POST"])
+@json_body
+def api_login():
+    data = request.get_json()
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+
+    user = authenticate(username, password)
+    if user:
+        session["user_id"] = user["id"]
+        session["username"] = user["username"]
+        session["role"] = user["role"]
+        return jsonify({"success": True, "role": user["role"]})
+    return jsonify({"success": False, "error": "Invalid credentials"}), 401
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.clear()
+    return jsonify({"success": True})
+
+
+@app.route("/api/session", methods=["GET"])
+@login_required
+def api_session():
+    return jsonify({
+        "user_id": session["user_id"],
+        "username": session["username"],
+        "role": session["role"],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Admin API - user management
+# ---------------------------------------------------------------------------
+
+@app.route("/api/admin/users", methods=["GET"])
+@login_required
+@admin_required
+def api_admin_list_users():
+    users = list_users()
+    return jsonify({"users": users})
+
+
+@app.route("/api/admin/users", methods=["POST"])
+@login_required
+@admin_required
+@json_body
+def api_admin_create_user():
+    data = request.get_json()
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+    if len(username) < 3:
+        return jsonify({"error": "Username must be at least 3 characters"}), 400
+    if len(password) < 3:
+        return jsonify({"error": "Password must be at least 3 characters"}), 400
+
+    ok = create_user(username, password)
+    if ok:
+        return jsonify({"success": True})
+    return jsonify({"error": "Username already exists"}), 409
+
+
+@app.route("/api/admin/users/<int:user_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def api_admin_delete_user(user_id):
+    if user_id == session["user_id"]:
+        return jsonify({"error": "Cannot delete yourself"}), 400
+    ok = delete_user(user_id)
+    if ok:
+        return jsonify({"success": True})
+    return jsonify({"error": "Cannot delete admin user or user not found"}), 400
+
+
+@app.route("/api/admin/change-password", methods=["POST"])
+@login_required
+@json_body
+def api_change_password():
+    data = request.get_json()
+    new_password = data.get("new_password", "")
+    if len(new_password) < 3:
+        return jsonify({"error": "Password must be at least 3 characters"}), 400
+    ok = change_password(session["user_id"], new_password)
+    return jsonify({"success": ok})
+
+
+# ---------------------------------------------------------------------------
+# Email servers API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/servers", methods=["GET"])
+@login_required
+def api_get_servers():
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM email_servers WHERE user_id = ? ORDER BY id",
+        (session["user_id"],),
+    )
+    servers = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"servers": servers})
+
+
+@app.route("/api/servers", methods=["POST"])
+@login_required
+@json_body
+def api_add_server():
+    data = request.get_json()
+    required = ["server_name", "incoming_server", "username", "password", "incoming_protocol"]
+    for field in required:
+        if not data.get(field):
+            return jsonify({"error": f"'{field}' is required"}), 400
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO email_servers
+           (user_id, server_name, incoming_server, incoming_port, incoming_protocol,
+            outgoing_server, outgoing_port, username, password,
+            delete_after_download, use_ssl)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            session["user_id"],
+            data["server_name"],
+            data["incoming_server"],
+            data.get("incoming_port"),
+            data["incoming_protocol"],
+            data.get("outgoing_server", ""),
+            data.get("outgoing_port"),
+            data["username"],
+            data["password"],
+            1 if data.get("delete_after_download") else 0,
+            1 if data.get("use_ssl", True) else 0,
+        ),
+    )
+    conn.commit()
+    server_id = cursor.lastrowid
+    conn.close()
+    return jsonify({"success": True, "id": server_id})
+
+
+@app.route("/api/servers/<int:server_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_update_server(server_id):
+    data = request.get_json()
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """UPDATE email_servers SET
+           server_name=?, incoming_server=?, incoming_port=?, incoming_protocol=?,
+           outgoing_server=?, outgoing_port=?, username=?, password=?,
+           delete_after_download=?, use_ssl=?
+           WHERE id=? AND user_id=?""",
+        (
+            data.get("server_name", ""),
+            data.get("incoming_server", ""),
+            data.get("incoming_port"),
+            data.get("incoming_protocol", "POP3"),
+            data.get("outgoing_server", ""),
+            data.get("outgoing_port"),
+            data.get("username", ""),
+            data.get("password", ""),
+            1 if data.get("delete_after_download") else 0,
+            1 if data.get("use_ssl", True) else 0,
+            server_id,
+            session["user_id"],
+        ),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/servers/<int:server_id>", methods=["DELETE"])
+@login_required
+def api_delete_server(server_id):
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM email_servers WHERE id=? AND user_id=?",
+        (server_id, session["user_id"]),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/servers/<int:server_id>/fetch", methods=["POST"])
+@login_required
+def api_fetch_server(server_id):
+    def _fetch_and_fwd():
+        result = fetch_emails(server_id)
+        if result.get("success"):
+            classify_unclassified_emails(session["user_id"])
+            auto_classify_senders(session["user_id"])
+
+    # Run in background to avoid timeout
+    thread = threading.Thread(target=_fetch_and_fwd, daemon=True)
+    thread.start()
+    return jsonify({"success": True, "message": "Fetch started"})
+
+
+@app.route("/api/fetch-all", methods=["POST"])
+@login_required
+def api_fetch_all():
+    def _fetch_all_and_fwd():
+        results = fetch_all_for_user(session["user_id"])
+        classify_unclassified_emails(session["user_id"])
+        auto_classify_senders(session["user_id"])
+
+    thread = threading.Thread(target=_fetch_all_and_fwd, daemon=True)
+    thread.start()
+    return jsonify({"success": True, "message": "Fetch started for all servers"})
+
+
+# ---------------------------------------------------------------------------
+# Mailbox API
+# ---------------------------------------------------------------------------
+
+def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
+    """Build inbox-subtree children, optionally scoped to one server.
+
+    When *server_id* is provided email counts and sender-groups are
+    filtered to that server only.
+    """
+    server_where = "AND server_id = ?" if server_id else ""
+    server_params = [server_id] if server_id else []
+    suffix = f"_s{server_id}" if server_id else ""
+
+    children = []
+    for ig in imp_groups:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM emails WHERE user_id=? AND folder='inbox' AND importance_group_id=? {server_where}",
+            [user_id, ig["id"]] + server_params,
+        )
+        imp_count = cursor.fetchone()[0]
+
+        imp_node = {
+            "id": f"imp_{ig['id']}{suffix}",
+            "name": ig["name"],
+            "icon": "flag",
+            "count": imp_count,
+            "imp_group_id": ig["id"],
+            "children": [],
+        }
+        if server_id:
+            imp_node["server_id"] = server_id
+
+        cursor.execute(
+            f"""SELECT sg.id, sg.sender_email, sg.group_name,
+                (SELECT COUNT(*) FROM emails WHERE sender_group_id=sg.id AND user_id=? AND folder='inbox' {server_where}) AS sender_count
+                FROM sender_groups sg WHERE sg.user_id=? AND sg.importance_group_id=?
+                ORDER BY sg.group_name""",
+            [user_id] + server_params + [user_id, ig["id"]],
+        )
+        for sg in cursor.fetchall():
+            if sg["sender_count"] > 0:
+                sender_node = {
+                    "id": f"sender_{sg['id']}{suffix}",
+                    "name": sg["group_name"],
+                    "email": sg["sender_email"],
+                    "icon": "user",
+                    "count": sg["sender_count"],
+                    "sender_group_id": sg["id"],
+                    "imp_group_id": ig["id"],
+                }
+                if server_id:
+                    sender_node["server_id"] = server_id
+                imp_node["children"].append(sender_node)
+
+        children.append(imp_node)
+    return children
+
+
+@app.route("/api/mailbox/tree", methods=["GET"])
+@login_required
+def api_mailbox_tree():
+    """Return the mailbox tree structure for the left menu."""
+    user_id = session["user_id"]
+    stats = _folder_stats(user_id)
+
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    imp_groups = get_importance_groups(user_id)
+
+    cursor.execute(
+        "SELECT id, server_name FROM email_servers WHERE user_id = ? ORDER BY id",
+        (user_id,),
+    )
+    servers = cursor.fetchall()
+
+    folders = []
+
+    if session.get("group_by_server") and servers:
+        for srv in servers:
+            cursor.execute(
+                "SELECT COUNT(*) FROM emails WHERE user_id=? AND folder='inbox' AND server_id=?",
+                (user_id, srv["id"]),
+            )
+            total = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM emails WHERE user_id=? AND folder='inbox' AND server_id=? AND is_read=0",
+                (user_id, srv["id"]),
+            )
+            unread = cursor.fetchone()[0]
+
+            srv_node = {
+                "id": f"server_{srv['id']}",
+                "name": srv["server_name"],
+                "icon": "inbox",
+                "server_id": srv["id"],
+                "count": total,
+                "unread": unread,
+                "children": _build_inbox_children(user_id, cursor, imp_groups, server_id=srv["id"]),
+            }
+            folders.append(srv_node)
+    else:
+        folders.append({
+            "id": "inbox",
+            "name": "Inbox",
+            "icon": "inbox",
+            "count": stats["inbox"],
+            "unread": stats["unread"],
+            "children": _build_inbox_children(user_id, cursor, imp_groups),
+        })
+
+    folders.extend([
+        {"id": "outbox", "name": "Outbox", "icon": "send", "count": stats["outbox"], "children": []},
+        {"id": "drafts", "name": "Drafts", "icon": "file-text", "count": stats["drafts"], "children": []},
+        {"id": "deleted", "name": "Deleted", "icon": "trash-2", "count": stats["deleted"], "children": []},
+    ])
+
+    conn.close()
+    return jsonify({"folders": folders})
+
+
+@app.route("/api/emails", methods=["GET"])
+@login_required
+def api_get_emails():
+    """Get emails with filtering."""
+    user_id = session["user_id"]
+    folder = request.args.get("folder", "inbox")
+    imp_group_id = request.args.get("imp_group_id", type=int)
+    sender_group_id = request.args.get("sender_group_id", type=int)
+    server_id = request.args.get("server_id", type=int)
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 50, type=int)
+    search = request.args.get("search", "").strip()
+
+    params = [user_id, folder]
+    where_clauses = ["user_id = ?", "folder = ?"]
+
+    if imp_group_id:
+        where_clauses.append("importance_group_id = ?")
+        params.append(imp_group_id)
+
+    if sender_group_id:
+        where_clauses.append("sender_group_id = ?")
+        params.append(sender_group_id)
+
+    if server_id:
+        where_clauses.append("server_id = ?")
+        params.append(server_id)
+
+    if search:
+        where_clauses.append("(subject LIKE ? OR sender LIKE ? OR sender_name LIKE ? OR body_text LIKE ?)")
+        search_pattern = f"%{search}%"
+        params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
+
+    where = " AND ".join(where_clauses)
+
+    # Count total
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT COUNT(*) FROM emails WHERE {where}", params)
+    total = cursor.fetchone()[0]
+
+    # Fetch page
+    offset = (page - 1) * per_page
+    cursor.execute(
+        f"SELECT id, sender, sender_name, subject, received_date, is_read, "
+        f"server_badge, importance_group_id, sender_group_id "
+        f"FROM emails WHERE {where} ORDER BY received_date DESC LIMIT ? OFFSET ?",
+        params + [per_page, offset],
+    )
+    emails = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    return jsonify({"emails": emails, "total": total, "page": page, "per_page": per_page})
+
+
+@app.route("/api/emails/<int:email_id>", methods=["GET"])
+@login_required
+def api_get_email(email_id):
+    """Get a single email with full content."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT e.*, es.server_name as server_display_name "
+        "FROM emails e LEFT JOIN email_servers es ON e.server_id = es.id "
+        "WHERE e.id = ? AND e.user_id = ?",
+        (email_id, session["user_id"]),
+    )
+    email_data = cursor.fetchone()
+    if not email_data:
+        conn.close()
+        return jsonify({"error": "Email not found"}), 404
+
+    email_data = dict(email_data)
+
+    # Mark as read
+    if not email_data["is_read"]:
+        cursor.execute(
+            "UPDATE emails SET is_read = 1 WHERE id = ?",
+            (email_id,),
+        )
+        conn.commit()
+
+    conn.close()
+    return jsonify({"email": email_data})
+
+
+@app.route("/api/emails/<int:email_id>/move", methods=["POST"])
+@login_required
+@json_body
+def api_move_email(email_id):
+    """Move email to a different folder."""
+    data = request.get_json()
+    folder = data.get("folder", "")
+    if folder not in ("inbox", "outbox", "drafts", "deleted"):
+        return jsonify({"error": "Invalid folder"}), 400
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE emails SET folder=? WHERE id=? AND user_id=?",
+        (folder, email_id, session["user_id"]),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+
+    if ok and folder == "deleted":
+        # Process forward rules before marking deleted
+        process_forward_rules(session["user_id"], email_id)
+
+    return jsonify({"success": ok})
+
+
+@app.route("/api/emails/<int:email_id>", methods=["DELETE"])
+@login_required
+def api_delete_email(email_id):
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM emails WHERE id=? AND user_id=?",
+        (email_id, session["user_id"]),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/emails/group/<int:sender_group_id>", methods=["DELETE"])
+@login_required
+def api_delete_group_emails(sender_group_id):
+    """Delete all emails in a sender group."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM emails WHERE sender_group_id=? AND user_id=?",
+        (sender_group_id, session["user_id"]),
+    )
+    conn.commit()
+    deleted = cursor.rowcount
+    conn.close()
+    return jsonify({"success": True, "deleted": deleted})
+
+
+@app.route("/api/emails/group/importance/<int:imp_group_id>", methods=["DELETE"])
+@login_required
+def api_delete_importance_group_emails(imp_group_id):
+    """Delete all emails in an importance group."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM emails WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
+        (imp_group_id, session["user_id"]),
+    )
+    conn.commit()
+    deleted = cursor.rowcount
+    conn.close()
+    return jsonify({"success": True, "deleted": deleted})
+
+
+# ---------------------------------------------------------------------------
+# Sender groups API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/sender-groups", methods=["GET"])
+@login_required
+def api_get_sender_groups():
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT sg.*, ig.name as importance_name "
+        "FROM sender_groups sg "
+        "LEFT JOIN importance_groups ig ON sg.importance_group_id = ig.id "
+        "WHERE sg.user_id=? ORDER BY sg.group_name",
+        (session["user_id"],),
+    )
+    groups = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"sender_groups": groups})
+
+
+@app.route("/api/sender-groups/<int:group_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_update_sender_group(group_id):
+    """Update a sender group (change importance group assignment)."""
+    data = request.get_json()
+    importance_group_id = data.get("importance_group_id")
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    # Update the sender group
+    cursor.execute(
+        "UPDATE sender_groups SET importance_group_id=?, is_auto_classified=0 WHERE id=? AND user_id=?",
+        (importance_group_id, group_id, session["user_id"]),
+    )
+    ok = cursor.rowcount > 0
+
+    # Also update all emails in this sender group
+    if ok and importance_group_id is not None:
+        cursor.execute(
+            "UPDATE emails SET importance_group_id=? WHERE sender_group_id=? AND user_id=?",
+            (importance_group_id, group_id, session["user_id"]),
+        )
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/sender-groups/auto-classify", methods=["POST"])
+@login_required
+def api_auto_classify():
+    """Run auto-classification on all senders."""
+    auto_classify_senders(session["user_id"])
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Compose / Draft API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/compose", methods=["POST"])
+@login_required
+@json_body
+def api_compose():
+    """Send an email."""
+    data = request.get_json()
+    server_id = data.get("server_id")
+    to_addr = data.get("to", "").strip()
+    subject = data.get("subject", "")
+    body_text = data.get("body_text", "")
+    body_html = data.get("body_html", "")
+
+    if not server_id:
+        return jsonify({"error": "Server selection required"}), 400
+    if not to_addr:
+        return jsonify({"error": "Recipient required"}), 400
+    if "@" not in to_addr:
+        return jsonify({"error": "Invalid email address"}), 400
+
+    result = send_email(
+        session["user_id"], server_id, to_addr, subject, body_text, body_html,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/drafts", methods=["GET"])
+@login_required
+def api_get_drafts():
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, sender, recipients, subject, body_text, body_html, created_at "
+        "FROM emails WHERE user_id=? AND folder='drafts' ORDER BY created_at DESC",
+        (session["user_id"],),
+    )
+    drafts = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"drafts": drafts})
+
+
+@app.route("/api/drafts", methods=["POST"])
+@login_required
+@json_body
+def api_save_draft():
+    data = request.get_json()
+    result = save_draft(
+        user_id=session["user_id"],
+        server_id=data.get("server_id"),
+        to_addr=data.get("to", ""),
+        subject=data.get("subject", ""),
+        body_text=data.get("body_text", ""),
+        body_html=data.get("body_html", ""),
+        draft_id=data.get("draft_id"),
+    )
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Forward rules API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/forward-rules", methods=["GET"])
+@login_required
+def api_get_forward_rules():
+    rules = get_forward_rules(session["user_id"])
+    return jsonify({"rules": rules})
+
+
+@app.route("/api/forward-rules", methods=["POST"])
+@login_required
+@json_body
+def api_create_forward_rule():
+    data = request.get_json()
+    result = create_forward_rule(
+        user_id=session["user_id"],
+        forward_to=data.get("forward_to", ""),
+        importance_group_id=data.get("importance_group_id"),
+        sender_group_id=data.get("sender_group_id"),
+    )
+    return jsonify(result)
+
+
+@app.route("/api/forward-rules/<int:rule_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_update_forward_rule(rule_id):
+    data = request.get_json()
+    result = update_forward_rule(
+        rule_id, session["user_id"],
+        forward_to=data.get("forward_to"),
+        importance_group_id=data.get("importance_group_id"),
+        sender_group_id=data.get("sender_group_id"),
+        enabled=data.get("enabled"),
+    )
+    return jsonify(result)
+
+
+@app.route("/api/forward-rules/<int:rule_id>", methods=["DELETE"])
+@login_required
+def api_delete_forward_rule(rule_id):
+    result = delete_forward_rule(rule_id, session["user_id"])
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Stats API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/stats", methods=["GET"])
+@login_required
+def api_stats():
+    stats = _folder_stats(session["user_id"])
+    return jsonify(stats)
+
+
+# ---------------------------------------------------------------------------
+# Preferences API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/preferences/group-by-server", methods=["GET"])
+@login_required
+def api_get_group_by_server():
+    return jsonify({"group_by_server": session.get("group_by_server", False)})
+
+
+@app.route("/api/preferences/group-by-server", methods=["POST"])
+@login_required
+def api_toggle_group_by_server():
+    session["group_by_server"] = not session.get("group_by_server", False)
+    return jsonify({"group_by_server": session["group_by_server"]})
+
+
+# ---------------------------------------------------------------------------
+# Importance / Sender group info (for settings)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/groups/importance", methods=["GET"])
+@login_required
+def api_importance_groups():
+    groups = get_importance_groups(session["user_id"])
+    return jsonify({"groups": groups})
+
+
+# ---------------------------------------------------------------------------
+# Initialize DB on startup
+# ---------------------------------------------------------------------------
+
+_db_dir = os.path.join(os.path.dirname(__file__), "db")
+os.makedirs(_db_dir, exist_ok=True)
+with app.app_context():
+    init_db()
+    init_default_admin()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    port = Config.LOGIN_PORT
+    print(f"╔══════════════════════════════════════════════╗")
+    print(f"║       Email Client - Web Interface            ║")
+    print(f"║──────────────────────────────────────────────║")
+    print(f"║  URL:  http://0.0.0.0:{port:<5}                  ║")
+    print(f"║  Admin: admin / 1234                         ║")
+    print(f"╚══════════════════════════════════════════════╝")
+    app.run(host="0.0.0.0", port=port, debug=os.environ.get("FLASK_DEBUG", "1") == "1")
+
+
+if __name__ == "__main__":
+    main()

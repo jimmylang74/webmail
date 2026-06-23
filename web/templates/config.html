@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ T('Email Client - Server Config') }}</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="stylesheet" href="/static/css/mail.css">
+</head>
+<body>
+  <div class="app-layout">
+    <header class="toolbar">
+      <div class="toolbar-left">
+        <span class="toolbar-title">{{ T('Server Configuration') }}</span>
+      </div>
+      <div class="toolbar-right">
+        <span id="configUserDisplay" class="toolbar-user"></span>
+        <button class="btn btn-sm" onclick="location.href='/mail'">{{ T('Back to Mail') }}</button>
+        <button class="btn btn-sm" onclick="logout()">{{ T('Logout') }}</button>
+      </div>
+    </header>
+
+    <main class="admin-content">
+      <!-- Server List -->
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h2>{{ T('Email Servers') }}</h2>
+          <button class="btn btn-primary btn-sm" onclick="showAddServer()">{{ T('+ Add Server') }}</button>
+        </div>
+        <div class="admin-card-body">
+          <div id="serverList" class="server-list"></div>
+        </div>
+      </div>
+
+      <!-- Forward Rules -->
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h2>{{ T('Auto-Forward Rules') }}</h2>
+          <button class="btn btn-primary btn-sm" onclick="showAddForwardRule()">{{ T('+ Add Rule') }}</button>
+        </div>
+        <div class="admin-card-body">
+          <div id="forwardRulesList" class="server-list"></div>
+        </div>
+      </div>
+
+      <!-- Sender Groups -->
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h2>{{ T('Sender Groups') }}</h2>
+          <button class="btn btn-sm" onclick="autoClassifySenders()">{{ T('Auto-Classify') }}</button>
+        </div>
+        <div class="admin-card-body">
+          <div id="senderGroupsList" class="server-list"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Server Form Modal -->
+  <div id="serverModal" class="modal" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="serverModalTitle">{{ T('Add Email Server') }}</h3>
+        <button class="modal-close" onclick="closeServerModal()">&times;</button>
+      </div>
+      <form id="serverForm" onsubmit="saveServer(event)">
+        <input type="hidden" id="serverId">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="serverName">{{ T('Server Display Name') }}</label>
+            <input type="text" id="serverName" required placeholder="{{ T('e.g., Gmail, Outlook') }}">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="incomingProtocol">{{ T('Incoming Protocol') }}</label>
+              <select id="incomingProtocol">
+                <option value="POP3">POP3</option>
+                <option value="IMAP">IMAP</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="useSsl">{{ T('Use SSL/TLS') }}</label>
+              <select id="useSsl">
+                <option value="1">{{ T('Yes') }}</option>
+                <option value="0">{{ T('No') }}</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="incomingServer">{{ T('Incoming Server (POP3/IMAP)') }}</label>
+            <input type="text" id="incomingServer" required placeholder="{{ T('e.g., pop.gmail.com') }}">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="incomingPort">{{ T('Incoming Port') }}</label>
+              <input type="number" id="incomingPort" placeholder="{{ T('Auto (POP3:995/IMAP:993)') }}">
+            </div>
+            <div class="form-group">
+              <label for="deleteAfterDownload">
+                <input type="checkbox" id="deleteAfterDownload">
+                {{ T('Delete after download') }}
+              </label>
+            </div>
+          </div>
+          <hr>
+          <div class="form-group">
+            <label for="outgoingServer">{{ T('Outgoing Server (SMTP) - optional') }}</label>
+            <input type="text" id="outgoingServer" placeholder="{{ T('e.g., smtp.gmail.com') }}">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="outgoingPort">{{ T('SMTP Port') }}</label>
+              <input type="number" id="outgoingPort" placeholder="{{ T('Auto (465/587)') }}">
+            </div>
+          </div>
+          <hr>
+          <div class="form-group">
+            <label for="emailUsername">{{ T('Account Username (Email)') }}</label>
+            <input type="text" id="emailUsername" required placeholder="{{ T('your@email.com') }}">
+          </div>
+          <div class="form-group">
+            <label for="emailPassword">{{ T('Account Password') }}</label>
+            <input type="password" id="emailPassword" required placeholder="{{ T('App password') }}">
+          </div>
+          <div id="serverError" class="form-message form-error"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" onclick="closeServerModal()">{{ T('Cancel') }}</button>
+          <button type="submit" class="btn btn-primary">{{ T('Save Server') }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Forward Rule Modal -->
+  <div id="forwardModal" class="modal" style="display:none;">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3 id="forwardModalTitle">{{ T('Add Forward Rule') }}</h3>
+        <button class="modal-close" onclick="closeForwardModal()">&times;</button>
+      </div>
+      <form id="forwardForm" onsubmit="saveForwardRule(event)">
+        <input type="hidden" id="forwardRuleId">
+        <div class="modal-body">
+          <p class="form-help">{{ T('Forward all emails from a selected group to another email address.') }}</p>
+          <div class="form-group">
+            <label for="forwardTo">{{ T('Forward To Email') }}</label>
+            <input type="email" id="forwardTo" required placeholder="forward@example.com">
+          </div>
+          <div class="form-group">
+            <label for="forwardImportanceGroup">{{ T('Importance Group') }}</label>
+            <select id="forwardImportanceGroup">
+              <option value="">{{ T('-- Any Importance --') }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="forwardSenderGroup">{{ T('Sender Group') }}</label>
+            <select id="forwardSenderGroup">
+              <option value="">{{ T('-- Any Sender --') }}</option>
+            </select>
+          </div>
+          <div id="forwardError" class="form-message form-error"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" onclick="closeForwardModal()">{{ T('Cancel') }}</button>
+          <button type="submit" class="btn btn-primary">{{ T('Save Rule') }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>window._LOCALE = {{ locale_json|safe }};</script>
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/auth.js"></script>
+  <script src="/static/js/config.js"></script>
+</body>
+</html>

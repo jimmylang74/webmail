@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ T('Email Client') }}</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="stylesheet" href="/static/css/mail.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Toolbar -->
+    <header class="toolbar">
+      <div class="toolbar-left">
+        <button class="btn btn-sm btn-outline" onclick="composeNew()" title="{{ T('Compose') }}">&#9997; {{ T('Compose') }}</button>
+        <button class="btn btn-sm btn-outline" onclick="fetchAll()" title="{{ T('Fetch') }}">&#8635; {{ T('Fetch') }}</button>
+        <label class="checkbox-label" title="{{ T('Group by Server') }}">
+          <input type="checkbox" id="groupByServer" onchange="toggleGroupByServer(this.checked)">
+          {{ T('Group by Server') }}
+        </label>
+        <span id="fetchStatus" class="fetch-status"></span>
+      </div>
+      <div class="toolbar-center">
+        <span class="toolbar-title">{{ T('Email Client') }}</span>
+      </div>
+      <div class="toolbar-right">
+        <div class="user-dropdown" id="userDropdown">
+          <button class="btn btn-sm btn-outline user-dropdown-toggle" onclick="toggleDropdown(event)">
+            <span id="userDisplay" class="toolbar-user"></span> &#9660;
+          </button>
+          <div class="user-dropdown-menu" id="dropdownMenu">
+            <a href="#" onclick="showChangePassword(); return false;">&#128274; {{ T('Change Password') }}</a>
+            <a href="#" onclick="openConfig(); return false;">&#9881; {{ T('Server Config') }}</a>
+            <a href="#" id="adminLinkDropdown" onclick="location.href='/admin'; return false;" style="display:none;">&#9878; {{ T('User Management') }}</a>
+            <div class="dropdown-divider"></div>
+            <a href="#" onclick="logout(); return false;">&#10140; {{ T('Logout') }}</a>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Layout: Tree | Content -->
+    <div class="main-layout">
+      <!-- Left: Tree Menu -->
+      <nav class="sidebar" id="sidebar">
+        <div class="sidebar-search">
+          <input type="text" id="searchInput" placeholder="{{ T('Search emails...') }}" onkeyup="if(event.key==='Enter') searchEmails()">
+        </div>
+        <div class="tree-menu" id="treeMenu">
+          <!-- Rendered by JS -->
+        </div>
+      </nav>
+
+      <!-- Right: Content Area -->
+      <div class="content-area" id="contentArea">
+        <!-- Email List View -->
+        <div id="emailListView" class="email-list-view">
+          <div class="email-list-header">
+            <span id="currentFolderTitle">{{ T('Inbox') }}</span>
+            <span id="emailCount" class="email-count"></span>
+            <div class="email-list-actions">
+              <button class="btn btn-sm btn-outline" onclick="deleteGroup()" id="deleteGroupBtn" title="{{ T('Delete All') }}" style="display:none;">&#128465; {{ T('Delete All') }}</button>
+            </div>
+          </div>
+          <div class="email-list" id="emailList">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <!-- Email Detail View -->
+        <div id="emailDetailView" class="email-detail-view" style="display:none;">
+          <div class="email-detail-toolbar">
+            <button class="btn btn-sm btn-outline" onclick="backToList()">&larr; {{ T('Back') }}</button>
+            <button class="btn btn-sm btn-outline" onclick="deleteCurrentEmail()">&#128465; {{ T('Delete') }}</button>
+            <button class="btn btn-sm btn-outline" onclick="forwardEmail()">&#8618; {{ T('Forward') }}</button>
+          </div>
+          <div class="email-detail" id="emailDetail">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <!-- Compose View -->
+        <div id="composeView" class="compose-view" style="display:none;">
+          <div class="compose-toolbar">
+            <button class="btn btn-sm btn-outline" onclick="closeCompose()">&larr; {{ T('Discard') }}</button>
+            <button class="btn btn-sm btn-outline" onclick="saveDraft()">{{ T('Save Draft') }}</button>
+          </div>
+          <form id="composeForm" onsubmit="sendEmail(event)">
+            <div class="compose-form">
+              <div class="form-group">
+                <label>{{ T('From Server') }}</label>
+                <select id="composeServer" required>
+                  <option value="">{{ T('-- Select SMTP Server --') }}</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>{{ T('To') }}</label>
+                <input type="email" id="composeTo" required placeholder="recipient@example.com">
+              </div>
+              <div class="form-group">
+                <label>{{ T('Subject') }}</label>
+                <input type="text" id="composeSubject" placeholder="{{ T('Subject') }}">
+              </div>
+              <div class="form-group">
+                <textarea id="composeBody" rows="15" placeholder="{{ T('Write your message...') }}"></textarea>
+              </div>
+              <div class="compose-actions">
+                <button type="submit" class="btn btn-primary">{{ T('Send') }}</button>
+                <span id="composeStatus" class="compose-status"></span>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Change Password Modal -->
+  <div id="changePwdModal" class="modal" style="display:none;">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3>{{ T('Change Password') }}</h3>
+        <button class="modal-close" onclick="closeChangePassword()">&times;</button>
+      </div>
+      <form id="changePwdForm" onsubmit="changeMyPassword(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="cpNewPassword">{{ T('New Password') }}</label>
+            <input type="password" id="cpNewPassword" required minlength="3">
+          </div>
+          <div class="form-group">
+            <label for="cpConfirmPassword">{{ T('Confirm Password') }}</label>
+            <input type="password" id="cpConfirmPassword" required minlength="3">
+          </div>
+          <div id="cpMessage" class="form-message"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" onclick="closeChangePassword()">{{ T('Cancel') }}</button>
+          <button type="submit" class="btn btn-primary">{{ T('Update Password') }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>window._LOCALE = {{ locale_json|safe }};</script>
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/auth.js"></script>
+  <script src="/static/js/mail.js"></script>
+</body>
+</html>

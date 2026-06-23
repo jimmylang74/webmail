@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ T('Email Client - Admin Panel') }}</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="stylesheet" href="/static/css/mail.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Toolbar -->
+    <header class="toolbar">
+      <div class="toolbar-left">
+        <span class="toolbar-title">{{ T('Admin Panel') }}</span>
+      </div>
+      <div class="toolbar-right">
+        <span id="adminUserDisplay" class="toolbar-user"></span>
+        <button class="btn btn-sm" onclick="location.href='/mail'">{{ T('Back to Mail') }}</button>
+        <button class="btn btn-sm" onclick="logout()">{{ T('Logout') }}</button>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="admin-content">
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h2>{{ T('User Management') }}</h2>
+          <button class="btn btn-primary btn-sm" onclick="showAddUser()">{{ T('+ Add User') }}</button>
+        </div>
+        <div class="admin-card-body">
+          <table class="admin-table" id="userTable">
+            <thead>
+              <tr>
+                <th>{{ T('ID') }}</th>
+                <th>{{ T('Username') }}</th>
+                <th>{{ T('Role') }}</th>
+                <th>{{ T('Created') }}</th>
+                <th>{{ T('Actions') }}</th>
+              </tr>
+            </thead>
+            <tbody id="userTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h2>{{ T('Change Password') }}</h2>
+        </div>
+        <div class="admin-card-body">
+          <form id="changePwdForm" onsubmit="changePassword(event)">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="newPassword">{{ T('New Password') }}</label>
+                <input type="password" id="newPassword" required minlength="3">
+              </div>
+              <div class="form-group">
+                <label for="confirmPassword">{{ T('Confirm Password') }}</label>
+                <input type="password" id="confirmPassword" required minlength="3">
+              </div>
+              <div class="form-group" style="align-self:flex-end;">
+                <button type="submit" class="btn btn-primary">{{ T('Update Password') }}</button>
+              </div>
+            </div>
+            <div id="pwdMessage" class="form-message"></div>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Add User Modal -->
+  <div id="addUserModal" class="modal" style="display:none;">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3>{{ T('Add New User') }}</h3>
+        <button class="modal-close" onclick="closeAddUser()">&times;</button>
+      </div>
+      <form id="addUserForm" onsubmit="addUser(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="newUsername">{{ T('Username') }}</label>
+            <input type="text" id="newUsername" required minlength="3">
+          </div>
+          <div class="form-group">
+            <label for="newUserPassword">{{ T('Password') }}</label>
+            <input type="password" id="newUserPassword" required minlength="3">
+          </div>
+          <div id="addUserError" class="form-message form-error"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" onclick="closeAddUser()">{{ T('Cancel') }}</button>
+          <button type="submit" class="btn btn-primary">{{ T('Create User') }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>window._LOCALE = {{ locale_json|safe }};</script>
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/auth.js"></script>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>
