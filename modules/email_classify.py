@@ -118,7 +118,7 @@ def get_or_create_sender_group(user_id: int, sender: str, sender_name: str, conn
         return dict(existing)
 
     importance = classify_email(sender, sender_name, "", "")
-    group_name = sender.split("@")[0] if "@" in sender else sender
+    group_name = sender_name if sender_name else (sender.split("@")[0] if "@" in sender else sender)
 
     cursor.execute(
         "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
