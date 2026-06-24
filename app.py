@@ -7,7 +7,7 @@ sender grouping, and auto-forwarding rules.
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (
@@ -46,6 +46,7 @@ from modules.forward import (
     process_forward_rules,
     update_forward_rule,
 )
+from modules.scheduler import scheduler
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -287,8 +288,8 @@ def api_add_server():
         """INSERT INTO email_servers
            (user_id, server_name, incoming_server, incoming_port, incoming_protocol,
             outgoing_server, outgoing_port, username, password,
-            delete_after_download, use_ssl)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            delete_after_download, use_ssl, fetch_interval_minutes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session["user_id"],
             data["server_name"],
@@ -301,6 +302,7 @@ def api_add_server():
             data["password"],
             1 if data.get("delete_after_download") else 0,
             1 if data.get("use_ssl", True) else 0,
+            data.get("fetch_interval_minutes", 0),
         ),
     )
     conn.commit()
@@ -321,7 +323,7 @@ def api_update_server(server_id):
         """UPDATE email_servers SET
            server_name=?, incoming_server=?, incoming_port=?, incoming_protocol=?,
            outgoing_server=?, outgoing_port=?, username=?, password=?,
-           delete_after_download=?, use_ssl=?
+           delete_after_download=?, use_ssl=?, fetch_interval_minutes=?
            WHERE id=? AND user_id=?""",
         (
             data.get("server_name", ""),
@@ -334,6 +336,7 @@ def api_update_server(server_id):
             data.get("password", ""),
             1 if data.get("delete_after_download") else 0,
             1 if data.get("use_ssl", True) else 0,
+            data.get("fetch_interval_minutes", 0),
             server_id,
             session["user_id"],
         ),
@@ -400,6 +403,16 @@ def api_test_server(server_id):
 def api_fetch_all():
     user_id = session["user_id"]
 
+    now = datetime.utcnow().isoformat()
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE email_servers SET last_fetch_at=? WHERE user_id=?",
+        (now, user_id),
+    )
+    conn.commit()
+    conn.close()
+
     def _fetch_all_and_fwd():
         results = fetch_all_for_user(user_id)
         classify_unclassified_emails(user_id)
@@ -445,18 +458,20 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
 
         cursor.execute(
             f"""SELECT sg.id, sg.sender_email, sg.group_name,
-                (SELECT COUNT(*) FROM emails WHERE sender_group_id=sg.id AND user_id=? AND folder='inbox' {server_where}) AS sender_count
-                FROM sender_groups sg WHERE sg.user_id=? AND sg.importance_group_id=?
+                (SELECT COUNT(*) FROM emails WHERE sender_group_id=sg.id AND user_id=? AND folder='inbox' AND importance_group_id=? {server_where}) AS sender_count
+                FROM sender_groups sg WHERE sg.user_id=? AND sg.id IN (
+                    SELECT sender_group_id FROM emails WHERE user_id=? AND folder='inbox' AND importance_group_id=? {server_where}
+                )
                 ORDER BY sg.group_name""",
-            [user_id] + server_params + [user_id, ig["id"]],
+            [user_id, ig["id"]] + server_params + [user_id] + [user_id, ig["id"]] + server_params,
         )
         for sg in cursor.fetchall():
             if sg["sender_count"] > 0:
                 cursor.execute(
                     f"SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
-                    f"FROM emails WHERE user_id=? AND folder='inbox' AND sender_group_id=? {server_where} "
+                    f"FROM emails WHERE user_id=? AND folder='inbox' AND sender_group_id=? AND importance_group_id=? {server_where} "
                     f"ORDER BY received_date DESC LIMIT 50",
-                    [user_id, sg["id"]] + server_params,
+                    [user_id, sg["id"], ig["id"]] + server_params,
                 )
                 email_children = []
                 for em in cursor.fetchall():
@@ -1020,6 +1035,54 @@ def api_stats():
     return jsonify(stats)
 
 
+@app.route("/api/next-fetch", methods=["GET"])
+@login_required
+def api_next_fetch():
+    """Return the next scheduled automatic fetch time for the current user."""
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT server_name, last_fetch_at, fetch_interval_minutes "
+        "FROM email_servers WHERE user_id=? AND fetch_interval_minutes > 0",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    now = datetime.utcnow()
+    next_fetch = None
+    server_name = None
+    interval_minutes = None
+
+    for row in rows:
+        interval = row["fetch_interval_minutes"]
+        last_fetch = row["last_fetch_at"]
+        try:
+            last_dt = datetime.fromisoformat(last_fetch) if last_fetch else now
+        except (ValueError, TypeError):
+            last_dt = now
+
+        due_at = last_dt + timedelta(minutes=interval)
+        while due_at <= now:
+            due_at += timedelta(minutes=interval)
+        if next_fetch is None or due_at < next_fetch:
+            next_fetch = due_at
+            server_name = row["server_name"]
+            interval_minutes = interval
+
+    if next_fetch is None:
+        return jsonify({"next_fetch_at": None, "seconds_until": None, "server_name": None, "interval_minutes": None})
+
+    seconds_until = max(1, int((next_fetch - now).total_seconds()))
+    return jsonify({
+        "next_fetch_at": next_fetch.isoformat(),
+        "seconds_until": seconds_until,
+        "server_name": server_name,
+        "interval_minutes": interval_minutes,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Preferences API
 # ---------------------------------------------------------------------------
@@ -1057,6 +1120,9 @@ os.makedirs(_db_dir, exist_ok=True)
 with app.app_context():
     init_db()
     init_default_admin()
+
+# Start background scheduler for automatic email fetching
+scheduler.start()
 
 
 # ---------------------------------------------------------------------------

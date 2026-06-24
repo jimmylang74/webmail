@@ -53,6 +53,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
     loadTree();
     loadServersForCompose();
+    startFetchCountdown();
   }
 });
 
@@ -653,12 +654,82 @@ async function fetchAll() {
   try {
     await api('/api/fetch-all', { method: 'POST' });
     statusEl.textContent = __('Fetch started. Refresh tree shortly.');
+    refreshFetchCountdown();
     setTimeout(() => {
       loadTree();
       statusEl.textContent = '';
     }, 3000);
   } catch (err) {
     statusEl.textContent = __('Fetch failed');
+  }
+}
+
+let fetchCountdownTimer = null;
+let fetchCountdownTarget = null;
+let fetchCountdownRefreshing = false;
+let fetchCountdownInterval = null;
+
+function formatCountdown(seconds) {
+  if (seconds <= 0) return __('Due');
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m > 0) {
+    return __('{0}m {1}s', m, s < 10 ? '0' + s : s);
+  }
+  return __('{0}s', s);
+}
+
+async function refreshFetchCountdown() {
+  if (fetchCountdownRefreshing) return;
+  fetchCountdownRefreshing = true;
+  try {
+    const data = await api('/api/next-fetch');
+    const el = document.getElementById('fetchCountdown');
+    if (!el) return;
+
+    if (!data.next_fetch_at) {
+      el.style.display = 'inline';
+      el.textContent = __('Auto fetch (off)');
+      fetchCountdownTarget = null;
+      fetchCountdownInterval = null;
+      return;
+    }
+
+    fetchCountdownTarget = new Date(Date.now() + data.seconds_until * 1000);
+    fetchCountdownInterval = data.interval_minutes;
+    el.style.display = 'inline';
+    updateFetchCountdown();
+  } catch (_) {
+  } finally {
+    fetchCountdownRefreshing = false;
+  }
+}
+
+function updateFetchCountdown() {
+  const el = document.getElementById('fetchCountdown');
+  if (!el || !fetchCountdownTarget) return;
+
+  const ms = fetchCountdownTarget - Date.now();
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const interval = fetchCountdownInterval != null ? fetchCountdownInterval : 0;
+  if (seconds <= 0) {
+    if (ms > 0) {
+      el.textContent = __('Auto fetch (countdown {0} min): {1}', interval, formatCountdown(1));
+      return;
+    }
+    el.textContent = __('Auto fetch: due');
+    fetchCountdownTarget = null;
+    refreshFetchCountdown();
+    return;
+  }
+  el.textContent = __('Auto fetch (countdown {0} min): {1}', interval, formatCountdown(seconds));
+}
+
+function startFetchCountdown() {
+  refreshFetchCountdown();
+  setInterval(refreshFetchCountdown, 30000);
+  if (!fetchCountdownTimer) {
+    fetchCountdownTimer = setInterval(updateFetchCountdown, 1000);
   }
 }
 

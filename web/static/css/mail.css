@@ -19,6 +19,7 @@
 }
 .toolbar-user { color: var(--text-secondary); font-size: 0.85rem; }
 .fetch-status { font-size: 0.8rem; color: var(--text-secondary); margin-left: 8px; }
+.fetch-countdown { font-size: 0.8rem; color: var(--text-secondary); margin-left: 8px; font-variant-numeric: tabular-nums; }
 .checkbox-label { display: flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; user-select: none; }
 .checkbox-label input { margin: 0; }
 

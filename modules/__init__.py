@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS email_servers (
     delete_after_download INTEGER DEFAULT 0,
     use_ssl INTEGER DEFAULT 1,
     last_fetch_at TIMESTAMP,
+    fetch_interval_minutes INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

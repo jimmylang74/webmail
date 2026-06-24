@@ -28,12 +28,16 @@ async function loadServers() {
       card.className = 'server-card';
       const proto = srv.incoming_protocol || 'POP3';
       const lastFetch = srv.last_fetch_at ? new Date(srv.last_fetch_at).toLocaleString() : __('Never');
+      const fetchInterval = srv.fetch_interval_minutes || 0;
+      const intervalLabel = fetchInterval > 0
+        ? ' &middot; ' + __('Auto every {0} min', fetchInterval)
+        : '';
       card.innerHTML = `
         <div class="server-info">
           <div class="server-name">${escHtml(srv.server_name)}</div>
           <div class="server-detail">
             ${escHtml(srv.username)} &middot; ${proto} ${srv.incoming_server}${srv.outgoing_server ? ' &middot; ' + __('SMTP enabled') : ''}
-            <br>${__('Last fetch: {0}', lastFetch)}
+            <br>${__('Last fetch: {0}', lastFetch)}${intervalLabel}
           </div>
         </div>
         <div class="server-actions">
@@ -80,6 +84,7 @@ async function editServer(id) {
     document.getElementById('emailPassword').value = srv.password || '';
     document.getElementById('useSsl').value = srv.use_ssl ? '1' : '0';
     document.getElementById('deleteAfterDownload').checked = !!srv.delete_after_download;
+    document.getElementById('fetchInterval').value = srv.fetch_interval_minutes || 0;
     document.getElementById('serverError').textContent = '';
     document.getElementById('serverModal').style.display = 'flex';
   } catch (err) {
@@ -101,6 +106,7 @@ async function saveServer(e) {
     password: document.getElementById('emailPassword').value,
     use_ssl: document.getElementById('useSsl').value === '1',
     delete_after_download: document.getElementById('deleteAfterDownload').checked,
+    fetch_interval_minutes: parseInt(document.getElementById('fetchInterval').value) || 0,
   };
 
   try {
