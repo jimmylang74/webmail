@@ -185,14 +185,72 @@ function createTreeItem(node, depth) {
   main.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (isImpGroup) {
+    if (isEmail) {
+      contextMenuTarget = {type: 'email', id: node.email_id, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null};
+      showContextMenu(e.clientX, e.clientY);
+    } else if (isImpGroup) {
       contextMenuTarget = {type: 'imp', id: node.imp_group_id, serverId: node.server_id || null};
       showContextMenu(e.clientX, e.clientY);
     } else if (isSenderGroup) {
-      contextMenuTarget = {type: 'sender', id: node.sender_group_id, serverId: node.server_id || null};
+      contextMenuTarget = {type: 'sender', id: node.sender_group_id, impGroupId: node.imp_group_id, serverId: node.server_id || null};
       showContextMenu(e.clientX, e.clientY);
     }
   });
+
+  // ---- Drag and Drop ----
+  if (isEmail || isSenderGroup) {
+    main.draggable = true;
+    main.addEventListener('dragstart', (e) => {
+      e.stopPropagation();
+      if (isEmail) {
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          type: 'email',
+          emailId: node.email_id,
+          impGroupId: node.imp_group_id,
+        }));
+      } else if (isSenderGroup) {
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          type: 'sender',
+          senderGroupId: node.sender_group_id,
+          impGroupId: node.imp_group_id,
+        }));
+      }
+      e.dataTransfer.effectAllowed = 'move';
+      main.classList.add('dragging');
+    });
+    main.addEventListener('dragend', () => {
+      main.classList.remove('dragging');
+    });
+  }
+
+  if (isImpGroup) {
+    main.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      main.classList.add('drag-over');
+    });
+    main.addEventListener('dragleave', (e) => {
+      e.stopPropagation();
+      main.classList.remove('drag-over');
+    });
+    main.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      main.classList.remove('drag-over');
+      const raw = e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      try {
+        const data = JSON.parse(raw);
+        const impGroupId = parseInt(node.imp_group_id);
+        if (data.type === 'email' && data.emailId) {
+          moveEmailToImportance(data.emailId, impGroupId);
+        } else if (data.type === 'sender' && data.senderGroupId) {
+          moveSenderGroupImportance(data.senderGroupId, impGroupId);
+        }
+      } catch (_) {}
+    });
+  }
 
   item.appendChild(main);
 
@@ -349,11 +407,114 @@ function forwardEmail() {
 }
 
 // ===== Context Menu =====
+let cachedImpGroups = null;
+
+async function getImpGroups() {
+  if (cachedImpGroups) return cachedImpGroups;
+  try {
+    const data = await api('/api/groups/importance');
+    cachedImpGroups = data.groups || [];
+  } catch (_) {
+    cachedImpGroups = [];
+  }
+  return cachedImpGroups;
+}
+
+function invalidateImpGroupCache() {
+  cachedImpGroups = null;
+}
+
 function showContextMenu(x, y) {
   const menu = document.getElementById('contextMenu');
+  const target = contextMenuTarget;
+  if (!target) return;
+
+  // Build move-to submenu
+  const moveSubmenu = document.getElementById('ctxMoveSubmenu');
+  moveSubmenu.innerHTML = '';
+
+  getImpGroups().then(groups => {
+    groups.forEach(g => {
+      // Skip current group for email and sender (no point moving to where it already is)
+      if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
+
+      const item = document.createElement('div');
+      item.className = 'context-menu-item submenu-item';
+      item.textContent = g.name;
+      const impGroupId = g.id;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const savedTarget = contextMenuTarget;
+        hideContextMenu();
+        if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
+      });
+      moveSubmenu.appendChild(item);
+    });
+  });
+
+  // Show/hide delete button based on type
+  const deleteItem = document.getElementById('ctxDeleteAll');
+  const divider = document.getElementById('ctxDivider');
+  const moveSection = document.getElementById('ctxMoveSection');
+  if (target.type === 'email') {
+    deleteItem.style.display = 'none';
+    divider.style.display = 'none';
+    moveSection.style.display = 'block';
+  } else {
+    deleteItem.style.display = 'flex';
+    divider.style.display = 'block';
+    moveSection.style.display = 'block';
+  }
+
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
   menu.classList.add('show');
+}
+
+async function moveTargetToImportance(impGroupId, target) {
+  target = target || contextMenuTarget;
+  if (!target) return;
+
+  try {
+    if (target.type === 'email') {
+      await api(`/api/emails/${target.id}/move-importance`, {
+        method: 'POST',
+        body: { importance_group_id: impGroupId },
+      });
+    } else if (target.type === 'sender') {
+      await api(`/api/sender-groups/${target.id}`, {
+        method: 'PUT',
+        body: { importance_group_id: impGroupId },
+      });
+    }
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to move: {0}', err.message));
+  }
+}
+
+async function moveEmailToImportance(emailId, impGroupId) {
+  try {
+    await api(`/api/emails/${emailId}/move-importance`, {
+      method: 'POST',
+      body: { importance_group_id: impGroupId },
+    });
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to move email: {0}', err.message));
+  }
+}
+
+async function moveSenderGroupImportance(senderGroupId, impGroupId) {
+  try {
+    await api(`/api/sender-groups/${senderGroupId}`, {
+      method: 'PUT',
+      body: { importance_group_id: impGroupId },
+    });
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to move group: {0}', err.message));
+  }
 }
 
 function hideContextMenu() {

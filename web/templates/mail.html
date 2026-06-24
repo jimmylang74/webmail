@@ -108,6 +108,17 @@
 
       <!-- Context Menu -->
       <div class="context-menu" id="contextMenu">
+        <div class="context-menu-section" id="ctxMoveSection">
+          <div class="context-menu-item context-menu-parent" id="ctxMoveTrigger">
+            <span class="ctx-icon">&#10148;</span>
+            <span>{{ T('Move to') }}</span>
+            <span class="ctx-submenu-arrow">&#9654;</span>
+          </div>
+          <div class="context-submenu" id="ctxMoveSubmenu">
+            <!-- Dynamically populated by JS -->
+          </div>
+        </div>
+        <div class="context-menu-divider" id="ctxDivider"></div>
         <div class="context-menu-item" id="ctxDeleteAll" onclick="contextDeleteAll()">
           <span class="ctx-icon">&#128465;</span>
           <span>{{ T('Delete All Emails in Group') }}</span>

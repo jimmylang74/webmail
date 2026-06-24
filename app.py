@@ -469,6 +469,8 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
                         "is_read": em["is_read"],
                         "received_date": em["received_date"],
                         "server_badge": em["server_badge"],
+                        "imp_group_id": ig["id"],
+                        "sender_group_id": sg["id"],
                         "type": "email",
                     })
 
@@ -712,6 +714,97 @@ def api_delete_importance_group_emails(imp_group_id):
     return jsonify({"success": True, "deleted": deleted})
 
 
+@app.route("/api/emails/<int:email_id>/move-importance", methods=["POST"])
+@login_required
+@json_body
+def api_move_email_importance(email_id):
+    """Move a single email to a different importance group.
+
+    Creates a sender subgroup in the target importance if missing, and cleans
+    up the source sender subgroup if it becomes empty. Unlike moving an entire
+    sender group (PUT /api/sender-groups/<id>), this does NOT auto-deduplicate
+    when the same sender appears across multiple importance levels — the user
+    is explicitly choosing to distribute a sender's emails.
+    """
+    data = request.get_json()
+    target_imp_id = data.get("importance_group_id")
+    if not target_imp_id:
+        return jsonify({"error": "importance_group_id required"}), 400
+
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, sender, sender_name, sender_group_id, importance_group_id "
+        "FROM emails WHERE id=? AND user_id=?",
+        (email_id, user_id),
+    )
+    email = cursor.fetchone()
+    if not email:
+        conn.close()
+        return jsonify({"error": "Email not found"}), 404
+
+    old_sender_group_id = email["sender_group_id"]
+    old_imp_id = email["importance_group_id"]
+
+    if old_imp_id == target_imp_id:
+        conn.close()
+        return jsonify({"success": True})
+
+    sender_email = email["sender"]
+    sender_name = email["sender_name"] or ""
+
+    if old_sender_group_id:
+        cursor.execute(
+            "SELECT sender_name, group_name FROM sender_groups WHERE id=?",
+            (old_sender_group_id,),
+        )
+        old_sg = cursor.fetchone()
+        if old_sg and not sender_name:
+            sender_name = old_sg["sender_name"]
+
+    cursor.execute(
+        "SELECT sg.id FROM sender_groups sg "
+        "WHERE sg.user_id=? AND sg.sender_email=? AND sg.importance_group_id=?",
+        (user_id, sender_email, target_imp_id),
+    )
+    target_sg = cursor.fetchone()
+
+    if target_sg:
+        new_sender_group_id = target_sg["id"]
+    else:
+        group_name = (
+            sender_name
+            if sender_name
+            else (sender_email.split("@")[0] if "@" in sender_email else sender_email)
+        )
+        cursor.execute(
+            "INSERT INTO sender_groups (user_id, sender_email, sender_name, group_name, importance_group_id, is_auto_classified) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (user_id, sender_email, sender_name, group_name, target_imp_id),
+        )
+        new_sender_group_id = cursor.lastrowid
+
+    cursor.execute(
+        "UPDATE emails SET importance_group_id=?, sender_group_id=? WHERE id=? AND user_id=?",
+        (target_imp_id, new_sender_group_id, email_id, user_id),
+    )
+
+    if old_sender_group_id and old_sender_group_id != new_sender_group_id:
+        cursor.execute(
+            "SELECT COUNT(*) FROM emails WHERE sender_group_id=? AND user_id=? AND folder='inbox'",
+            (old_sender_group_id, user_id),
+        )
+        count = cursor.fetchone()[0]
+        if count == 0:
+            cursor.execute("DELETE FROM sender_groups WHERE id=?", (old_sender_group_id,))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
 # ---------------------------------------------------------------------------
 # Sender groups API
 # ---------------------------------------------------------------------------
@@ -733,6 +826,36 @@ def api_get_sender_groups():
     return jsonify({"sender_groups": groups})
 
 
+def _dedup_sender_groups(cursor, user_id, sender_email):
+    """Consolidate duplicate sender groups to the lowest importance level.
+
+    If a sender has groups in multiple importance levels, all emails are
+    consolidated into the lowest level (Ad < Normal < Important) and the
+    higher-level groups are deleted.
+    """
+    cursor.execute(
+        "SELECT sg.id, sg.importance_group_id, ig.sort_order "
+        "FROM sender_groups sg "
+        "JOIN importance_groups ig ON sg.importance_group_id = ig.id "
+        "WHERE sg.user_id=? AND sg.sender_email=?",
+        (user_id, sender_email),
+    )
+    groups = cursor.fetchall()
+
+    if len(groups) > 1:
+        lowest = min(groups, key=lambda r: r["sort_order"])
+        lowest_id = lowest["id"]
+        lowest_imp_id = lowest["importance_group_id"]
+
+        for g in groups:
+            if g["id"] != lowest_id:
+                cursor.execute(
+                    "UPDATE emails SET sender_group_id=?, importance_group_id=? WHERE sender_group_id=? AND user_id=?",
+                    (lowest_id, lowest_imp_id, g["id"], user_id),
+                )
+                cursor.execute("DELETE FROM sender_groups WHERE id=?", (g["id"],))
+
+
 @app.route("/api/sender-groups/<int:group_id>", methods=["PUT"])
 @login_required
 @json_body
@@ -744,19 +867,26 @@ def api_update_sender_group(group_id):
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
 
-    # Update the sender group
     cursor.execute(
         "UPDATE sender_groups SET importance_group_id=?, is_auto_classified=0 WHERE id=? AND user_id=?",
         (importance_group_id, group_id, session["user_id"]),
     )
     ok = cursor.rowcount > 0
 
-    # Also update all emails in this sender group
     if ok and importance_group_id is not None:
         cursor.execute(
             "UPDATE emails SET importance_group_id=? WHERE sender_group_id=? AND user_id=?",
             (importance_group_id, group_id, session["user_id"]),
         )
+
+        cursor.execute(
+            "SELECT sender_email FROM sender_groups WHERE id=? AND user_id=?",
+            (group_id, session["user_id"]),
+        )
+        sg = cursor.fetchone()
+        if sg:
+            sender_email = sg["sender_email"]
+            _dedup_sender_groups(cursor, session["user_id"], sender_email)
 
     conn.commit()
     conn.close()
