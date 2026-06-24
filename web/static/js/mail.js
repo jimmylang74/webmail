@@ -179,6 +179,8 @@ async function loadEmails() {
   const composeView = document.getElementById('composeView');
 
   detailView.style.display = 'none';
+  document.getElementById('splitterH').style.display = 'none';
+  document.getElementById('emailListView').style.flex = '';
   composeView.style.display = 'none';
   listView.style.display = 'flex';
   const listEl = document.getElementById('emailList');
@@ -250,6 +252,7 @@ async function openEmail(emailId) {
     document.getElementById('composeView').style.display = 'none';
     const detailView = document.getElementById('emailDetailView');
     detailView.style.display = 'flex';
+    document.getElementById('splitterH').style.display = 'block';
 
     const detailEl = document.getElementById('emailDetail');
     const date = email.received_date ? new Date(email.received_date).toLocaleString() : '';
@@ -305,7 +308,9 @@ async function openEmail(emailId) {
 }
 
 function backToList() {
+  document.getElementById('splitterH').style.display = 'none';
   document.getElementById('emailDetailView').style.display = 'none';
+  document.getElementById('emailListView').style.flex = '';
   currentState.currentEmailId = null;
   loadEmails();
 }
@@ -527,6 +532,96 @@ async function changeMyPassword(e) {
     msgDiv.className = 'form-message form-error';
   }
 }
+
+// ===== Splitter: Vertical (sidebar / content) =====
+(function initSplitterV() {
+  const splitter = document.getElementById('splitterV');
+  const sidebar = document.getElementById('sidebar');
+  let dragging = false;
+
+  splitter.addEventListener('mousedown', (e) => {
+    dragging = true;
+    splitter.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    let w = e.clientX;
+    w = Math.max(160, Math.min(500, w));
+    sidebar.style.width = w + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    try { localStorage.setItem('mail_sidebar_width', sidebar.style.width); } catch (_) {}
+  });
+
+  // Restore persisted width
+  try {
+    const saved = localStorage.getItem('mail_sidebar_width');
+    if (saved) sidebar.style.width = saved;
+  } catch (_) {}
+})();
+
+// ===== Splitter: Horizontal (email list / detail) =====
+(function initSplitterH() {
+  const splitter = document.getElementById('splitterH');
+  const listView = document.getElementById('emailListView');
+  let dragging = false;
+
+  splitter.addEventListener('mousedown', (e) => {
+    dragging = true;
+    splitter.classList.add('active');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const contentArea = document.getElementById('contentArea');
+    const rect = contentArea.getBoundingClientRect();
+    const offsetY = e.clientY - rect.top;
+    const minH = 80;
+    const maxH = rect.height - 80 - splitter.offsetHeight;
+    let h = Math.max(minH, Math.min(maxH, offsetY));
+    listView.style.flex = '0 0 ' + h + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    // Persist ratio
+    try {
+      const contentArea = document.getElementById('contentArea');
+      const rect = contentArea.getBoundingClientRect();
+      const listH = listView.getBoundingClientRect().height;
+      localStorage.setItem('mail_list_ratio', (listH / rect.height).toString());
+    } catch (_) {}
+  });
+
+  // Restore persisted ratio
+  try {
+    const ratio = parseFloat(localStorage.getItem('mail_list_ratio'));
+    if (ratio > 0 && ratio < 1) {
+      const contentArea = document.getElementById('contentArea');
+      requestAnimationFrame(() => {
+        const h = contentArea.getBoundingClientRect().height * ratio;
+        listView.style.flex = '0 0 ' + h + 'px';
+      });
+    }
+  } catch (_) {}
+})();
 
 // ===== Helper =====
 function escHtml(str) {

@@ -22,6 +22,7 @@
       </div>
       <div class="toolbar-center">
         <span class="toolbar-title">{{ T('Email Client') }}</span>
+        <img class="version-badge" src="https://img.shields.io/github/v/tag/jimmylang74/webmail" alt="version">
       </div>
       <div class="toolbar-right">
         <div class="user-dropdown" id="userDropdown">
@@ -51,6 +52,9 @@
         </div>
       </nav>
 
+      <!-- Vertical Splitter -->
+      <div class="splitter splitter-v" id="splitterV"></div>
+
       <!-- Right: Content Area -->
       <div class="content-area" id="contentArea">
         <!-- Email List View -->
@@ -66,6 +70,9 @@
             <!-- Rendered by JS -->
           </div>
         </div>
+
+        <!-- Horizontal Splitter -->
+        <div class="splitter splitter-h" id="splitterH"></div>
 
         <!-- Email Detail View -->
         <div id="emailDetailView" class="email-detail-view" style="display:none;">
