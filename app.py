@@ -452,6 +452,26 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
         )
         for sg in cursor.fetchall():
             if sg["sender_count"] > 0:
+                cursor.execute(
+                    f"SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
+                    f"FROM emails WHERE user_id=? AND folder='inbox' AND sender_group_id=? {server_where} "
+                    f"ORDER BY received_date DESC LIMIT 50",
+                    [user_id, sg["id"]] + server_params,
+                )
+                email_children = []
+                for em in cursor.fetchall():
+                    email_children.append({
+                        "id": f"email_{em['id']}{suffix}",
+                        "name": em["subject"] or "(No Subject)",
+                        "email_id": em["id"],
+                        "sender": em["sender"],
+                        "sender_name": em["sender_name"],
+                        "is_read": em["is_read"],
+                        "received_date": em["received_date"],
+                        "server_badge": em["server_badge"],
+                        "type": "email",
+                    })
+
                 sender_node = {
                     "id": f"sender_{sg['id']}{suffix}",
                     "name": sg["group_name"],
@@ -460,6 +480,7 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
                     "count": sg["sender_count"],
                     "sender_group_id": sg["id"],
                     "imp_group_id": ig["id"],
+                    "children": email_children,
                 }
                 if server_id:
                     sender_node["server_id"] = server_id

@@ -1,15 +1,47 @@
 /* ===== Mail Module - Main email interface ===== */
 
 let currentState = {
-  folder: 'inbox',
-  impGroupId: null,
-  senderGroupId: null,
-  serverId: null,
   currentEmailId: null,
-  page: 1,
-  search: '',
 };
 let allServers = [];
+let contextMenuTarget = null; // {type: 'imp'|'sender', id: int, serverId: int|null}
+
+// Tree state preservation
+let expandedNodeIds = new Set();
+let selectedEmailNodeId = null;
+
+function saveTreeState() {
+  expandedNodeIds.clear();
+  document.querySelectorAll('.tree-children:not(.collapsed)').forEach(container => {
+    const wrapper = container.parentElement;
+    if (wrapper && wrapper.dataset.nodeId) {
+      expandedNodeIds.add(wrapper.dataset.nodeId);
+    }
+  });
+}
+
+function restoreTreeState() {
+  // Restore expanded nodes
+  expandedNodeIds.forEach(id => {
+    const wrapper = document.querySelector(`[data-node-id="${CSS.escape(id)}"]`);
+    if (wrapper) {
+      const childrenContainer = wrapper.querySelector('.tree-children');
+      const toggle = wrapper.querySelector('.tree-toggle');
+      if (childrenContainer) {
+        childrenContainer.classList.remove('collapsed');
+        if (toggle) toggle.classList.remove('collapsed');
+      }
+    }
+  });
+  // Restore selected email highlight
+  if (selectedEmailNodeId) {
+    const wrapper = document.querySelector(`[data-node-id="${CSS.escape(selectedEmailNodeId)}"]`);
+    if (wrapper) {
+      const main = wrapper.querySelector('.tree-item');
+      if (main) main.classList.add('active');
+    }
+  }
+}
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -26,39 +58,46 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // ===== Tree Menu =====
 async function loadTree() {
+  saveTreeState();
   try {
     const data = await api('/api/mailbox/tree');
     const container = document.getElementById('treeMenu');
     container.innerHTML = '';
     data.folders.forEach(folder => {
-      const folderEl = createTreeItem(folder);
+      const folderEl = createTreeItem(folder, 0);
       container.appendChild(folderEl);
     });
-    // Default: select inbox
-    selectFolder('inbox');
+    restoreTreeState();
   } catch (err) {
     console.error('Failed to load tree:', err);
   }
 }
 
-function createTreeItem(node) {
+function createTreeItem(node, depth) {
   const item = document.createElement('div');
+  item.dataset.nodeId = node.id;
 
-  // Main folder/group item
+  const isImpGroup = node.imp_group_id != null && !node.sender_group_id;
+  const isSenderGroup = node.sender_group_id != null;
+  const isEmail = node.type === 'email';
+  const hasChildren = node.children && node.children.length > 0;
+
+  // Main item row
   const main = document.createElement('div');
   main.className = 'tree-item';
-  if (node.imp_group_id) {
-    // Look up importance name for coloring
+  if (isEmail) main.classList.add('email-item-tree');
+  if (isEmail && !node.is_read) main.classList.add('unread');
+
+  // Importance color class
+  if (node.imp_group_id && !node.type) {
     const impNames = {Ad: 'imp-Ad', Normal: 'imp-Normal', Important: 'imp-Important'};
     Object.values(impNames).forEach(c => main.classList.remove(c));
   }
-  if (node.icon === 'inbox') main.classList.add('active');
 
-  const hasChildren = node.children && node.children.length > 0;
-
-  if (hasChildren) {
+  // Toggle arrow (for collapsible nodes)
+  if (hasChildren && !isEmail) {
     const toggle = document.createElement('span');
-    toggle.className = 'tree-toggle';
+    toggle.className = 'tree-toggle collapsed';
     toggle.innerHTML = '&#9660;';
     main.appendChild(toggle);
   } else {
@@ -68,44 +107,90 @@ function createTreeItem(node) {
     main.appendChild(spacer);
   }
 
-  const icon = document.createElement('span');
-  icon.className = 'tree-icon';
-  icon.innerHTML = getFolderIcon(node.icon || 'folder');
-  main.appendChild(icon);
+  // Icon
+  if (!isEmail) {
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    if (isImpGroup) {
+      const impIcon = {Ad: '&#128683;', Normal: '&#128236;', Important: '&#9888;'};
+      icon.innerHTML = impIcon[node.name] || '&#9873;';
+    } else if (isSenderGroup) {
+      icon.innerHTML = '&#128100;';
+    } else {
+      icon.innerHTML = getFolderIcon(node.icon || 'folder');
+    }
+    main.appendChild(icon);
+  }
 
-  const name = document.createElement('span');
-  name.className = 'tree-name';
-  // Translate folder/importance names, keep sender names as-is
-  name.textContent = node.sender_group_id ? node.name : __(node.name);
-  if (node.email) name.title = node.email;
-  main.appendChild(name);
+  // Name
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'tree-name';
+  if (isEmail) {
+    const senderDisplay = node.sender_name || node.sender || '';
+    nameSpan.textContent = senderDisplay ? senderDisplay + ' - ' + (node.name || '') : (node.name || '');
+    nameSpan.title = node.name || '';
+  } else {
+    nameSpan.textContent = node.sender_group_id ? node.name : __(node.name);
+    if (node.email) nameSpan.title = node.email;
+  }
+  main.appendChild(nameSpan);
 
-  const count = document.createElement('span');
-  count.className = 'tree-count';
-  const totalCount = node.count || 0;
-  const unreadStr = node.unread ? __(' new') : '';
-  count.textContent = totalCount > 0 ? `${totalCount}${unreadStr}` : '';
-  main.appendChild(count);
+  // Count badge (for groups, not emails)
+  if (!isEmail && (node.count || node.unread)) {
+    const count = document.createElement('span');
+    count.className = 'tree-count';
+    const totalCount = node.count || 0;
+    const unreadStr = node.unread ? __(' new') : '';
+    count.textContent = totalCount > 0 ? `${totalCount}${unreadStr}` : '';
+    main.appendChild(count);
+  }
 
-  // Click handler
-  main.addEventListener('click', () => {
-    if ((node.name === 'Inbox' || node.server_id) && hasChildren) {
-      // Toggle expand
+  // Date for email items in tree
+  if (isEmail && node.received_date) {
+    const dateSpan = document.createElement('span');
+    dateSpan.className = 'email-date-tree';
+    try {
+      dateSpan.textContent = new Date(node.received_date).toLocaleDateString();
+    } catch (_) {}
+    main.appendChild(dateSpan);
+  }
+
+  // ---- Click handler ----
+  main.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (isEmail) {
+      // Click on email → show detail view
+      selectedEmailNodeId = node.id;
+      document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+      main.classList.add('active');
+      openEmail(node.email_id);
+    } else if (hasChildren) {
+      // Click on group with children → toggle collapse
       const childrenContainer = item.querySelector('.tree-children');
       if (childrenContainer) {
         childrenContainer.classList.toggle('collapsed');
-        main.querySelector('.tree-toggle')?.classList.toggle('collapsed');
+        const toggleEl = main.querySelector('.tree-toggle');
+        if (toggleEl) toggleEl.classList.toggle('collapsed');
       }
-    } else if (node.id === 'inbox') {
-      selectFolder('inbox');
-    } else if (node.server_id) {
-      selectServer(node.server_id);
-    } else if (node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
-      selectFolder(node.id);
-    } else if (node.sender_group_id) {
-      selectSenderGroup(node.sender_group_id, node.imp_group_id, node.server_id);
-    } else if (node.imp_group_id) {
-      selectImportanceGroup(node.imp_group_id, node.server_id);
+    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
+      // Click on root folder with no children → show empty state
+      showEmptyState();
+    } else if (node.id) {
+      // Any other leaf node
+      showEmptyState();
+    }
+  });
+
+  // ---- Right-click handler (context menu) ----
+  main.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isImpGroup) {
+      contextMenuTarget = {type: 'imp', id: node.imp_group_id, serverId: node.server_id || null};
+      showContextMenu(e.clientX, e.clientY);
+    } else if (isSenderGroup) {
+      contextMenuTarget = {type: 'sender', id: node.sender_group_id, serverId: node.server_id || null};
+      showContextMenu(e.clientX, e.clientY);
     }
   });
 
@@ -114,9 +199,9 @@ function createTreeItem(node) {
   // Children
   if (hasChildren) {
     const childrenContainer = document.createElement('div');
-    childrenContainer.className = 'tree-children';
+    childrenContainer.className = 'tree-children collapsed';
     node.children.forEach(child => {
-      const childEl = createTreeItem(child);
+      const childEl = createTreeItem(child, depth + 1);
       childrenContainer.appendChild(childEl);
     });
     item.appendChild(childrenContainer);
@@ -138,108 +223,15 @@ function getFolderIcon(iconName) {
   return icons[iconName] || '&#128193;';
 }
 
-// ===== Selection =====
-function selectFolder(folder) {
-  currentState = { folder, impGroupId: null, senderGroupId: null, serverId: null, currentEmailId: null, page: 1, search: '' };
-  document.getElementById('searchInput').value = '';
-  updateActiveTreeItem();
-  loadEmails();
-}
-
-function selectImportanceGroup(impGroupId, serverId) {
-  currentState = { folder: 'inbox', impGroupId, senderGroupId: null, serverId: serverId || null, currentEmailId: null, page: 1, search: '' };
-  document.getElementById('searchInput').value = '';
-  updateActiveTreeItem();
-  loadEmails();
-}
-
-function selectSenderGroup(senderGroupId, impGroupId, serverId) {
-  currentState = { folder: 'inbox', impGroupId, senderGroupId, serverId: serverId || null, currentEmailId: null, page: 1, search: '' };
-  document.getElementById('searchInput').value = '';
-  updateActiveTreeItem();
-  loadEmails();
-}
-
-function selectServer(serverId) {
-  currentState = { folder: 'inbox', impGroupId: null, senderGroupId: null, serverId, currentEmailId: null, page: 1, search: '' };
-  document.getElementById('searchInput').value = '';
-  updateActiveTreeItem();
-  loadEmails();
-}
-
-function updateActiveTreeItem() {
-  document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('active'));
-  // The active state is somewhat simplified - we just show the current folder
-}
-
-// ===== Email List =====
-async function loadEmails() {
-  const listView = document.getElementById('emailListView');
-  const detailView = document.getElementById('emailDetailView');
-  const composeView = document.getElementById('composeView');
-
-  detailView.style.display = 'none';
-  document.getElementById('splitterH').style.display = 'none';
-  document.getElementById('emailListView').style.flex = '';
-  composeView.style.display = 'none';
-  listView.style.display = 'flex';
-  const listEl = document.getElementById('emailList');
-  listEl.innerHTML = '<div class="loading">' + __('Loading emails') + '</div>';
-
-  // Update title
-  const titleEl = document.getElementById('currentFolderTitle');
-  const folderNames = { inbox: __('Inbox'), outbox: __('Outbox'), drafts: __('Drafts'), deleted: __('Deleted') };
-  titleEl.textContent = folderNames[currentState.folder] || __('Inbox');
-
-  // Show/hide delete group button
-  const deleteGroupBtn = document.getElementById('deleteGroupBtn');
-  deleteGroupBtn.style.display = (currentState.senderGroupId || currentState.impGroupId) ? '' : 'none';
-
-  try {
-    const params = new URLSearchParams({
-      folder: currentState.folder,
-      page: currentState.page,
-      per_page: 50,
-    });
-    if (currentState.impGroupId) params.set('imp_group_id', currentState.impGroupId);
-    if (currentState.senderGroupId) params.set('sender_group_id', currentState.senderGroupId);
-    if (currentState.serverId) params.set('server_id', currentState.serverId);
-    if (currentState.search) params.set('search', currentState.search);
-
-    const data = await api(`/api/emails?${params}`);
-    document.getElementById('emailCount').textContent = __('{0} messages', data.total);
-
-    listEl.innerHTML = '';
-    if (data.emails.length === 0) {
-      listEl.innerHTML = '<div class="empty-state"><div class="empty-icon">&#128236;</div><p>' + __('No emails in this folder') + '</p></div>';
-      return;
-    }
-
-    data.emails.forEach(email => {
-      const item = document.createElement('div');
-      item.className = `email-item${email.is_read ? '' : ' unread'}`;
-      const date = email.received_date ? new Date(email.received_date).toLocaleString() : '';
-      const senderDisplay = email.sender_name || email.sender;
-      const subjectDisplay = email.subject || __('(No Subject)');
-      item.innerHTML = `
-        <span class="email-sender" title="${escHtml(email.sender)}">${escHtml(senderDisplay)}</span>
-        <span class="email-subject">${escHtml(subjectDisplay)}</span>
-        ${email.server_badge ? `<span class="email-badge">${escHtml(email.server_badge)}</span>` : ''}
-        <span class="email-date">${date}</span>
-      `;
-      item.addEventListener('click', () => openEmail(email.id));
-      listEl.appendChild(item);
-    });
-  } catch (err) {
-    document.getElementById('emailList').innerHTML = '<div class="empty-state"><p class="text-danger">' + __('Error: {0}', err.message) + '</p></div>';
-  }
-}
-
-function searchEmails() {
-  const search = document.getElementById('searchInput').value.trim();
-  currentState.search = search;
-  currentState.page = 1;
-  loadEmails();
+// ===== Empty State =====
+function showEmptyState() {
+  document.getElementById('emailDetailView').style.display = 'none';
+  document.getElementById('composeView').style.display = 'none';
+  document.getElementById('emptyState').style.display = 'flex';
+  currentState.currentEmailId = null;
+  // Clear email highlight
+  document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+  selectedEmailNodeId = null;
 }
 
 // ===== Email Detail =====
@@ -250,9 +242,9 @@ async function openEmail(emailId) {
     currentState.currentEmailId = emailId;
 
     document.getElementById('composeView').style.display = 'none';
+    document.getElementById('emptyState').style.display = 'none';
     const detailView = document.getElementById('emailDetailView');
     detailView.style.display = 'flex';
-    document.getElementById('splitterH').style.display = 'block';
 
     const detailEl = document.getElementById('emailDetail');
     const date = email.received_date ? new Date(email.received_date).toLocaleString() : '';
@@ -293,26 +285,11 @@ async function openEmail(emailId) {
       bodyWrapper.appendChild(bodyDiv);
     }
 
-    // Refresh tree to update unread counts without resetting the view
-    try {
-      const treeData = await api('/api/mailbox/tree');
-      const container = document.getElementById('treeMenu');
-      container.innerHTML = '';
-      treeData.folders.forEach(folder => {
-        container.appendChild(createTreeItem(folder));
-      });
-    } catch (_) {}
+    // Refresh tree to update unread counts (preserves expanded/selected state)
+    loadTree();
   } catch (err) {
     alert(__('Failed to load email: {0}', err.message));
   }
-}
-
-function backToList() {
-  document.getElementById('splitterH').style.display = 'none';
-  document.getElementById('emailDetailView').style.display = 'none';
-  document.getElementById('emailListView').style.flex = '';
-  currentState.currentEmailId = null;
-  loadEmails();
 }
 
 async function deleteCurrentEmail() {
@@ -324,7 +301,8 @@ async function deleteCurrentEmail() {
       method: 'POST',
       body: { folder: 'deleted' },
     });
-    backToList();
+    showEmptyState();
+    loadTree();
   } catch (err) {
     alert(__('Failed to delete: {0}', err.message));
   }
@@ -335,22 +313,43 @@ function forwardEmail() {
   showCompose(__('Forward from email #{0}', currentState.currentEmailId));
 }
 
-async function deleteGroup() {
-  let msg = __('Delete ALL emails in this group?');
-  if (!confirm(msg)) return;
+// ===== Context Menu =====
+function showContextMenu(x, y) {
+  const menu = document.getElementById('contextMenu');
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.classList.add('show');
+}
+
+function hideContextMenu() {
+  document.getElementById('contextMenu').classList.remove('show');
+  contextMenuTarget = null;
+}
+
+async function contextDeleteAll() {
+  hideContextMenu();
+  if (!contextMenuTarget) return;
+  if (!confirm(__('Delete ALL emails in this group?'))) return;
 
   try {
-    if (currentState.senderGroupId) {
-      await api(`/api/emails/group/${currentState.senderGroupId}`, { method: 'DELETE' });
-    } else if (currentState.impGroupId) {
-      await api(`/api/emails/group/importance/${currentState.impGroupId}`, { method: 'DELETE' });
+    if (contextMenuTarget.type === 'sender') {
+      await api(`/api/emails/group/${contextMenuTarget.id}`, { method: 'DELETE' });
+    } else if (contextMenuTarget.type === 'imp') {
+      await api(`/api/emails/group/importance/${contextMenuTarget.id}`, { method: 'DELETE' });
     }
-    loadEmails();
+    showEmptyState();
     loadTree();
   } catch (err) {
     alert(__('Failed: {0}', err.message));
   }
 }
+
+// Close context menu on click anywhere else
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.context-menu')) {
+    hideContextMenu();
+  }
+});
 
 // ===== Compose =====
 async function loadServersForCompose() {
@@ -372,7 +371,7 @@ function composeNew() {
 }
 
 function showCompose(forwardText) {
-  document.getElementById('emailListView').style.display = 'none';
+  document.getElementById('emptyState').style.display = 'none';
   document.getElementById('emailDetailView').style.display = 'none';
   const composeView = document.getElementById('composeView');
   composeView.style.display = 'flex';
@@ -387,8 +386,7 @@ function closeCompose() {
   const composeView = document.getElementById('composeView');
   composeView.style.display = 'none';
   composeView.style.flex = '';
-  document.getElementById('emailListView').style.display = 'flex';
-  loadEmails();
+  showEmptyState();
 }
 
 async function sendEmail(e) {
@@ -461,7 +459,6 @@ async function fetchAll() {
     statusEl.textContent = __('Fetch started. Refresh tree shortly.');
     setTimeout(() => {
       loadTree();
-      loadEmails();
       statusEl.textContent = '';
     }, 3000);
   } catch (err) {
@@ -476,7 +473,6 @@ document.addEventListener('click', function(e) {
   if (dropdown && !dropdown.contains(e.target)) {
     menu.classList.remove('show');
   }
-  // Close modals on overlay click
   if (e.target.classList.contains('modal')) {
     e.target.style.display = 'none';
   }
@@ -563,63 +559,9 @@ async function changeMyPassword(e) {
     try { localStorage.setItem('mail_sidebar_width', sidebar.style.width); } catch (_) {}
   });
 
-  // Restore persisted width
   try {
     const saved = localStorage.getItem('mail_sidebar_width');
     if (saved) sidebar.style.width = saved;
-  } catch (_) {}
-})();
-
-// ===== Splitter: Horizontal (email list / detail) =====
-(function initSplitterH() {
-  const splitter = document.getElementById('splitterH');
-  const listView = document.getElementById('emailListView');
-  let dragging = false;
-
-  splitter.addEventListener('mousedown', (e) => {
-    dragging = true;
-    splitter.classList.add('active');
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    e.preventDefault();
-  });
-
-  document.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const contentArea = document.getElementById('contentArea');
-    const rect = contentArea.getBoundingClientRect();
-    const offsetY = e.clientY - rect.top;
-    const minH = 80;
-    const maxH = rect.height - 80 - splitter.offsetHeight;
-    let h = Math.max(minH, Math.min(maxH, offsetY));
-    listView.style.flex = '0 0 ' + h + 'px';
-  });
-
-  document.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    splitter.classList.remove('active');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    // Persist ratio
-    try {
-      const contentArea = document.getElementById('contentArea');
-      const rect = contentArea.getBoundingClientRect();
-      const listH = listView.getBoundingClientRect().height;
-      localStorage.setItem('mail_list_ratio', (listH / rect.height).toString());
-    } catch (_) {}
-  });
-
-  // Restore persisted ratio
-  try {
-    const ratio = parseFloat(localStorage.getItem('mail_list_ratio'));
-    if (ratio > 0 && ratio < 1) {
-      const contentArea = document.getElementById('contentArea');
-      requestAnimationFrame(() => {
-        const h = contentArea.getBoundingClientRect().height * ratio;
-        listView.style.flex = '0 0 ' + h + 'px';
-      });
-    }
   } catch (_) {}
 })();
 

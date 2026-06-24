@@ -44,9 +44,7 @@
     <div class="main-layout">
       <!-- Left: Tree Menu -->
       <nav class="sidebar" id="sidebar">
-        <div class="sidebar-search">
-          <input type="text" id="searchInput" placeholder="{{ T('Search emails...') }}" onkeyup="if(event.key==='Enter') searchEmails()">
-        </div>
+
         <div class="tree-menu" id="treeMenu">
           <!-- Rendered by JS -->
         </div>
@@ -57,27 +55,15 @@
 
       <!-- Right: Content Area -->
       <div class="content-area" id="contentArea">
-        <!-- Email List View -->
-        <div id="emailListView" class="email-list-view">
-          <div class="email-list-header">
-            <span id="currentFolderTitle">{{ T('Inbox') }}</span>
-            <span id="emailCount" class="email-count"></span>
-            <div class="email-list-actions">
-              <button class="btn btn-sm btn-outline" onclick="deleteGroup()" id="deleteGroupBtn" title="{{ T('Delete All') }}" style="display:none;">&#128465; {{ T('Delete All') }}</button>
-            </div>
-          </div>
-          <div class="email-list" id="emailList">
-            <!-- Rendered by JS -->
-          </div>
+        <!-- Empty state shown when no email is selected -->
+        <div id="emptyState" class="empty-state" style="flex:1;display:flex;">
+          <div class="empty-icon">&#128236;</div>
+          <p>{{ T('Select an email to view') }}</p>
         </div>
-
-        <!-- Horizontal Splitter -->
-        <div class="splitter splitter-h" id="splitterH"></div>
 
         <!-- Email Detail View -->
         <div id="emailDetailView" class="email-detail-view" style="display:none;">
           <div class="email-detail-toolbar">
-            <button class="btn btn-sm btn-outline" onclick="backToList()">&larr; {{ T('Back') }}</button>
             <button class="btn btn-sm btn-outline" onclick="deleteCurrentEmail()">&#128465; {{ T('Delete') }}</button>
             <button class="btn btn-sm btn-outline" onclick="forwardEmail()">&#8618; {{ T('Forward') }}</button>
           </div>
@@ -117,6 +103,14 @@
               </div>
             </div>
           </form>
+        </div>
+      </div>
+
+      <!-- Context Menu -->
+      <div class="context-menu" id="contextMenu">
+        <div class="context-menu-item" id="ctxDeleteAll" onclick="contextDeleteAll()">
+          <span class="ctx-icon">&#128465;</span>
+          <span>{{ T('Delete All Emails in Group') }}</span>
         </div>
       </div>
     </div>

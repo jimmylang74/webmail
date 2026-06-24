@@ -148,7 +148,7 @@
 .email-item .email-date { font-size: 0.8rem; color: var(--text-secondary); flex-shrink: 0; min-width: 80px; text-align: right; }
 
 /* ===== Email Detail View ===== */
-.email-detail-view { display: flex; flex-direction: column; flex: 1; min-height: 80px; overflow: hidden; border-top: 2px solid var(--border-color); }
+.email-detail-view { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .email-detail-toolbar {
   display: flex; align-items: center; gap: 6px; padding: 8px 16px;
   border-bottom: 1px solid var(--border-color); flex-shrink: 0;
@@ -255,3 +255,40 @@
   border-radius: 50%; animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== Context Menu ===== */
+.context-menu {
+  display: none; position: fixed; min-width: 200px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  z-index: 1000; padding: 4px 0; overflow: hidden;
+}
+.context-menu.show { display: block; }
+.context-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px; cursor: pointer; font-size: 0.85rem;
+  color: var(--text-primary); transition: background 0.1s;
+  user-select: none; white-space: nowrap;
+}
+.context-menu-item:hover { background: #fee2e2; color: var(--danger); }
+.context-menu-item .ctx-icon { width: 18px; text-align: center; flex-shrink: 0; }
+
+/* ===== Email items in tree ===== */
+.tree-item.email-item-tree {
+  padding-left: 28px; font-size: 0.8rem;
+}
+.tree-item.email-item-tree .tree-name {
+  color: var(--text-sidebar);
+  opacity: 0.85;
+}
+.tree-item.email-item-tree.unread .tree-name {
+  font-weight: 600; color: #fff; opacity: 1;
+}
+.tree-item.email-item-tree .email-date-tree {
+  font-size: 0.7rem; color: rgba(255,255,255,0.4);
+  margin-left: 6px; flex-shrink: 0;
+}
+.tree-item.email-item-tree:hover .tree-name { opacity: 1; }
+
+/* ===== Content area with no list view ===== */
+.content-area .empty-state { flex: 1; display: flex; }
