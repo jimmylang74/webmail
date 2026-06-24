@@ -719,7 +719,7 @@ function updateFetchCountdown() {
     }
     el.textContent = __('Auto fetch: due');
     fetchCountdownTarget = null;
-    refreshFetchCountdown();
+    fetchAll();
     return;
   }
   el.textContent = __('Auto fetch (countdown {0} min): {1}', interval, formatCountdown(seconds));
