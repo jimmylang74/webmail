@@ -270,14 +270,49 @@ async function openEmail(emailId) {
       const iframe = document.createElement('iframe');
       iframe.className = 'email-detail-body-html';
       iframe.sandbox = 'allow-same-origin';
-      iframe.srcdoc = email.body_html;
-      iframe.addEventListener('load', () => {
+
+      // Inject CSS override so email HTML fills available width.
+      // HTML emails typically ship with max-width:600px or body margins
+      // that cause content to occupy only a narrow strip in our full-width iframe.
+      const fullWidthCss = `
+        <style>
+          body, table, td, div, p, span, .container, .wrapper, .email-body, .content {
+            max-width: none !important;
+            width: 100% !important;
+          }
+          body { margin: 0 !important; padding: 16px !important; box-sizing: border-box !important; }
+          img { max-width: 100% !important; height: auto !important; }
+          table { max-width: 100% !important; }
+        </style>
+      `;
+      let htmlContent = email.body_html;
+      if (/<\/head>/i.test(htmlContent)) {
+        htmlContent = htmlContent.replace(/<\/head>/i, fullWidthCss + '</head>');
+      } else if (/<html[\s>]/i.test(htmlContent)) {
+        htmlContent = htmlContent.replace(/(<html[\s>])/i, '$1<head>' + fullWidthCss + '</head>');
+      } else if (/<body[\s>]/i.test(htmlContent)) {
+        htmlContent = '<head>' + fullWidthCss + '</head>' + htmlContent;
+      } else {
+        htmlContent = '<!DOCTYPE html><html><head>' + fullWidthCss + '</head><body>' + htmlContent + '</body></html>';
+      }
+      iframe.srcdoc = htmlContent;
+      bodyWrapper.appendChild(iframe);
+
+      // Poll-based iframe height auto-adjustment.
+      // The `load` event fires before layout settles and before images fetch,
+      // so scrollHeight is unreliable then. Polling every 100ms for 6s ensures
+      // we catch the final rendered height regardless of image load timing.
+      const pollInterval = setInterval(() => {
         try {
           const doc = iframe.contentDocument || iframe.contentWindow.document;
-          iframe.style.height = doc.documentElement.scrollHeight + 'px';
+          if (!doc || !doc.body) return;
+          const h = doc.documentElement.scrollHeight;
+          if (h > 0 && h !== parseInt(iframe.style.height)) {
+            iframe.style.height = h + 'px';
+          }
         } catch (_) {}
-      });
-      bodyWrapper.appendChild(iframe);
+      }, 100);
+      setTimeout(() => clearInterval(pollInterval), 6000);
     } else {
       const bodyDiv = document.createElement('div');
       bodyDiv.className = 'email-detail-body';

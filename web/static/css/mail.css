@@ -167,10 +167,14 @@
   padding-top: 16px; border-top: 1px solid var(--border-color);
   line-height: 1.7; font-size: 0.95rem; white-space: pre-wrap; word-break: break-word;
 }
+.email-detail-body-wrapper {
+  width: 100%; min-height: 0;
+}
 .email-detail-body-html {
   width: 100%; min-height: 200px; border: none;
   border-top: 1px solid var(--border-color); padding-top: 16px;
   background: transparent;
+  display: block;
 }
 
 /* ===== Compose View ===== */
