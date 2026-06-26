@@ -173,6 +173,71 @@ def fetch_pop3(server_config: dict, max_emails: int = 50) -> list:
     return emails_fetched
 
 
+def _parse_capabilities(caps) -> list:
+    """Parse imaplib capability response into a list of strings."""
+    if not caps:
+        return []
+    raw = caps[0] if isinstance(caps[0], bytes) else b""
+    return raw.decode("utf-8", errors="replace").split()
+
+
+def check_imap_capabilities(server_config: dict) -> dict:
+    """Connect to an IMAP server and return its capability list.
+
+    Tries CAPABILITY before login so the check can run as soon as the user
+    enters the server address. If IDLE is not advertised pre-login and
+    credentials are supplied, logs in and tries again.
+
+    Returns {"success": bool, "capabilities": list, "idle_supported": bool, "error": str}.
+    """
+    result = {"success": False, "capabilities": [], "idle_supported": False, "error": ""}
+    server = None
+    try:
+        if server_config["use_ssl"]:
+            server = imaplib.IMAP4_SSL(
+                server_config["incoming_server"],
+                server_config["incoming_port"] or 993,
+                timeout=15,
+            )
+        else:
+            server = imaplib.IMAP4(
+                server_config["incoming_server"],
+                server_config["incoming_port"] or 143,
+                timeout=15,
+            )
+
+        status, caps = server.capability()
+        capabilities = _parse_capabilities(caps)
+        if status == "OK" and "IDLE" in capabilities:
+            result["success"] = True
+            result["capabilities"] = capabilities
+            result["idle_supported"] = True
+            try:
+                server.logout()
+            except Exception:
+                pass
+            return result
+
+        has_credentials = bool(server_config.get("username") and server_config.get("password"))
+        if has_credentials:
+            server.login(server_config["username"], server_config["password"])
+            status, caps = server.capability()
+            capabilities = _parse_capabilities(caps)
+            server.logout()
+
+        result["success"] = status == "OK"
+        result["capabilities"] = capabilities
+        result["idle_supported"] = "IDLE" in capabilities
+    except Exception as e:
+        result["error"] = str(e)
+        if server:
+            try:
+                server.logout()
+            except Exception:
+                pass
+    return result
+
+
 def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
     """Fetch emails from an IMAP server.
 
