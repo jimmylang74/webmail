@@ -566,6 +566,7 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
                         "email_id": em["id"],
                         "sender": em["sender"],
                         "sender_name": em["sender_name"],
+                        "sender_group_name": sg["group_name"],
                         "is_read": em["is_read"],
                         "received_date": em["received_date"],
                         "server_badge": em["server_badge"],
@@ -1021,16 +1022,36 @@ def _dedup_sender_groups(cursor, user_id, sender_email):
 @login_required
 @json_body
 def api_update_sender_group(group_id):
-    """Update a sender group (change importance group assignment)."""
+    """Update a sender group (change importance group assignment or name)."""
     data = request.get_json()
     importance_group_id = data.get("importance_group_id")
+    group_name = data.get("group_name")
 
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
 
+    # Build dynamic SET clause for provided fields
+    updates = []
+    params = []
+
+    if importance_group_id is not None:
+        updates.append("importance_group_id=?")
+        params.append(importance_group_id)
+        updates.append("is_auto_classified=0")
+
+    if group_name is not None:
+        updates.append("group_name=?")
+        params.append(group_name)
+        updates.append("is_auto_classified=0")
+
+    if not updates:
+        conn.close()
+        return jsonify({"success": False, "error": "No fields to update"}), 400
+
+    params.extend([group_id, session["user_id"]])
     cursor.execute(
-        "UPDATE sender_groups SET importance_group_id=?, is_auto_classified=0 WHERE id=? AND user_id=?",
-        (importance_group_id, group_id, session["user_id"]),
+        f"UPDATE sender_groups SET {', '.join(updates)} WHERE id=? AND user_id=?",
+        params,
     )
     ok = cursor.rowcount > 0
 
