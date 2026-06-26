@@ -37,7 +37,7 @@ from modules.email_classify import (
     auto_classify_senders,
     classify_unclassified_emails,
 )
-from modules.email_fetch import fetch_all_for_user, fetch_emails, test_server_connection
+from modules.email_fetch import fetch_all_for_user, fetch_emails, test_server_connection, check_imap_capabilities
 from modules.email_send import save_draft, send_email
 from modules.forward import (
     create_forward_rule,
@@ -269,6 +269,9 @@ def api_get_servers():
     )
     servers = [dict(r) for r in cursor.fetchall()]
     conn.close()
+    for srv in servers:
+        srv.setdefault("imap_idle_supported", 0)
+        srv.setdefault("use_imap_idle", 0)
     return jsonify({"servers": servers})
 
 
@@ -284,12 +287,15 @@ def api_add_server():
 
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
+    use_imap_idle = 1 if data.get("use_imap_idle") else 0
+    imap_idle_supported = 1 if use_imap_idle and data.get("incoming_protocol", "").upper() == "IMAP" else 0
     cursor.execute(
         """INSERT INTO email_servers
            (user_id, server_name, incoming_server, incoming_port, incoming_protocol,
             outgoing_server, outgoing_port, username, password,
-            delete_after_download, use_ssl, fetch_interval_minutes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            delete_after_download, use_ssl, fetch_interval_minutes, use_imap_idle,
+            imap_idle_supported)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session["user_id"],
             data["server_name"],
@@ -303,6 +309,8 @@ def api_add_server():
             1 if data.get("delete_after_download") else 0,
             1 if data.get("use_ssl", True) else 0,
             data.get("fetch_interval_minutes", 0),
+            use_imap_idle,
+            imap_idle_supported,
         ),
     )
     conn.commit()
@@ -319,11 +327,14 @@ def api_update_server(server_id):
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
 
+    use_imap_idle = 1 if data.get("use_imap_idle") else 0
+    imap_idle_supported = 1 if use_imap_idle and data.get("incoming_protocol", "").upper() == "IMAP" else 0
     cursor.execute(
         """UPDATE email_servers SET
            server_name=?, incoming_server=?, incoming_port=?, incoming_protocol=?,
            outgoing_server=?, outgoing_port=?, username=?, password=?,
-           delete_after_download=?, use_ssl=?, fetch_interval_minutes=?
+           delete_after_download=?, use_ssl=?, fetch_interval_minutes=?, use_imap_idle=?,
+           imap_idle_supported=?
            WHERE id=? AND user_id=?""",
         (
             data.get("server_name", ""),
@@ -337,6 +348,8 @@ def api_update_server(server_id):
             1 if data.get("delete_after_download") else 0,
             1 if data.get("use_ssl", True) else 0,
             data.get("fetch_interval_minutes", 0),
+            use_imap_idle,
+            imap_idle_supported,
             server_id,
             session["user_id"],
         ),
@@ -396,6 +409,67 @@ def api_test_server(server_id):
 
     result = test_server_connection(dict(server))
     return jsonify(result)
+
+
+@app.route("/api/servers/<int:server_id>/idle-supported", methods=["POST"])
+@login_required
+@json_body
+def api_server_idle_supported(server_id):
+    """Check whether a saved IMAP server supports the IDLE capability."""
+    data = request.get_json()
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM email_servers WHERE id=? AND user_id=?",
+        (server_id, session["user_id"]),
+    )
+    server = cursor.fetchone()
+    conn.close()
+
+    if not server:
+        return jsonify({"success": False, "error": "Server not found"}), 404
+
+    cfg = dict(server)
+    cfg["incoming_server"] = data.get("incoming_server", cfg["incoming_server"])
+    cfg["incoming_port"] = data.get("incoming_port", cfg["incoming_port"])
+    cfg["incoming_protocol"] = data.get("incoming_protocol", cfg["incoming_protocol"])
+    cfg["use_ssl"] = data.get("use_ssl", cfg["use_ssl"])
+    cfg["username"] = data.get("username", cfg["username"])
+    cfg["password"] = data.get("password", cfg["password"])
+
+    result = check_imap_capabilities(cfg)
+
+    if result["success"] and cfg["incoming_protocol"].upper() == "IMAP":
+        uconn = get_user_db(session["user_id"])
+        uc = uconn.cursor()
+        uc.execute(
+            "UPDATE email_servers SET imap_idle_supported=? WHERE id=? AND user_id=?",
+            (1 if result["idle_supported"] else 0, server_id, session["user_id"]),
+        )
+        uconn.commit()
+        uconn.close()
+
+    return jsonify(result)
+
+
+@app.route("/api/servers/check-idle", methods=["POST"])
+@login_required
+@json_body
+def api_check_idle_unsaved():
+    """Check IMAP IDLE support for an unsaved server configuration."""
+    data = request.get_json()
+    if not data.get("incoming_server") or data.get("incoming_protocol", "").upper() != "IMAP":
+        return jsonify({"success": False, "idle_supported": False, "capabilities": []})
+
+    cfg = {
+        "incoming_server": data["incoming_server"],
+        "incoming_port": data.get("incoming_port"),
+        "incoming_protocol": "IMAP",
+        "use_ssl": data.get("use_ssl", True),
+        "username": data.get("username", ""),
+        "password": data.get("password", ""),
+    }
+    return jsonify(check_imap_capabilities(cfg))
 
 
 @app.route("/api/fetch-all", methods=["POST"])
@@ -1043,8 +1117,8 @@ def api_next_fetch():
     conn = get_user_db(user_id)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT server_name, last_fetch_at, fetch_interval_minutes "
-        "FROM email_servers WHERE user_id=? AND fetch_interval_minutes > 0",
+        "SELECT id, server_name, last_fetch_at, fetch_interval_minutes, use_imap_idle "
+        "FROM email_servers WHERE user_id=?",
         (user_id,),
     )
     rows = cursor.fetchall()
@@ -1054,25 +1128,54 @@ def api_next_fetch():
     next_fetch = None
     server_name = None
     interval_minutes = None
+    servers = []
 
     for row in rows:
-        interval = row["fetch_interval_minutes"]
+        use_idle = bool(row["use_imap_idle"])
+        interval = row["fetch_interval_minutes"] or 0
         last_fetch = row["last_fetch_at"]
-        try:
-            last_dt = datetime.fromisoformat(last_fetch) if last_fetch else now
-        except (ValueError, TypeError):
-            last_dt = now
+        seconds_until = None
+        next_fetch_at = None
 
-        due_at = last_dt + timedelta(minutes=interval)
-        while due_at <= now:
-            due_at += timedelta(minutes=interval)
-        if next_fetch is None or due_at < next_fetch:
-            next_fetch = due_at
-            server_name = row["server_name"]
-            interval_minutes = interval
+        if use_idle:
+            mode = "imap_idle"
+        elif interval > 0:
+            mode = "auto"
+            try:
+                last_dt = datetime.fromisoformat(last_fetch) if last_fetch else now
+            except (ValueError, TypeError):
+                last_dt = now
+
+            due_at = last_dt + timedelta(minutes=interval)
+            while due_at <= now:
+                due_at += timedelta(minutes=interval)
+            next_fetch_at = due_at.isoformat()
+            seconds_until = max(0, int((due_at - now).total_seconds()))
+
+            if next_fetch is None or due_at < next_fetch:
+                next_fetch = due_at
+                server_name = row["server_name"]
+                interval_minutes = interval
+        else:
+            mode = "manual"
+
+        servers.append({
+            "id": row["id"],
+            "server_name": row["server_name"],
+            "mode": mode,
+            "interval_minutes": interval,
+            "next_fetch_at": next_fetch_at,
+            "seconds_until": seconds_until,
+        })
 
     if next_fetch is None:
-        return jsonify({"next_fetch_at": None, "seconds_until": None, "server_name": None, "interval_minutes": None})
+        return jsonify({
+            "next_fetch_at": None,
+            "seconds_until": None,
+            "server_name": None,
+            "interval_minutes": None,
+            "servers": servers,
+        })
 
     seconds_until = max(1, int((next_fetch - now).total_seconds()))
     return jsonify({
@@ -1080,6 +1183,7 @@ def api_next_fetch():
         "seconds_until": seconds_until,
         "server_name": server_name,
         "interval_minutes": interval_minutes,
+        "servers": servers,
     })
 
 
