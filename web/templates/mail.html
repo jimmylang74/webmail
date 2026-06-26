@@ -108,6 +108,15 @@
 
       <!-- Context Menu -->
       <div class="context-menu" id="contextMenu">
+        <div class="context-menu-item" id="ctxMarkRead" onclick="markGroupAsRead()">
+          <span class="ctx-icon">&#9989;</span>
+          <span>{{ T('Mark All as Read') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxMarkUnread" onclick="markGroupAsUnread()">
+          <span class="ctx-icon">&#128394;</span>
+          <span>{{ T('Mark All as Unread') }}</span>
+        </div>
+        <div class="context-menu-divider" id="ctxDivider1"></div>
         <div class="context-menu-section" id="ctxMoveSection">
           <div class="context-menu-item context-menu-parent" id="ctxMoveTrigger">
             <span class="ctx-icon">&#10148;</span>
@@ -118,7 +127,7 @@
             <!-- Dynamically populated by JS -->
           </div>
         </div>
-        <div class="context-menu-divider" id="ctxDivider"></div>
+        <div class="context-menu-divider" id="ctxDivider2"></div>
         <div class="context-menu-item" id="ctxDeleteAll" onclick="contextDeleteAll()">
           <span class="ctx-icon">&#128465;</span>
           <span>{{ T('Delete All Emails in Group') }}</span>

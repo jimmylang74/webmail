@@ -101,10 +101,33 @@
 .tree-children { padding-left: 20px; }
 .tree-children.collapsed { display: none; }
 
-/* Importance group colors */
+/* Importance group styles - bold, larger, background contrast */
+.tree-item.imp-Ad,
+.tree-item.imp-Normal,
+.tree-item.imp-Important {
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin: 3px 6px;
+  border-radius: var(--radius);
+}
+.tree-item.imp-Ad { background: rgba(244, 63, 94, 0.12); }
+.tree-item.imp-Normal { background: rgba(59, 130, 246, 0.12); }
+.tree-item.imp-Important { background: rgba(245, 158, 11, 0.12); }
+.tree-item.imp-Ad:hover { background: rgba(244, 63, 94, 0.22); }
+.tree-item.imp-Normal:hover { background: rgba(59, 130, 246, 0.22); }
+.tree-item.imp-Important:hover { background: rgba(245, 158, 11, 0.22); }
+
+/* Importance group icon colors */
 .tree-item.imp-Ad .tree-icon { color: var(--badge-ad); }
 .tree-item.imp-Normal .tree-icon { color: var(--badge-normal); }
 .tree-item.imp-Important .tree-icon { color: var(--badge-important); }
+
+/* Unread count badge (unread/total format) */
+.tree-count-unread {
+  background: var(--badge-important) !important;
+  color: #fff;
+  font-weight: 600;
+}
 
 /* ===== Splitters ===== */
 .splitter {

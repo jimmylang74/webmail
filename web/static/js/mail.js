@@ -93,6 +93,9 @@ function createTreeItem(node, depth) {
   if (node.imp_group_id && !node.type) {
     const impNames = {Ad: 'imp-Ad', Normal: 'imp-Normal', Important: 'imp-Important'};
     Object.values(impNames).forEach(c => main.classList.remove(c));
+    if (impNames[node.name]) {
+      main.classList.add(impNames[node.name]);
+    }
   }
 
   // Toggle arrow (for collapsible nodes)
@@ -141,8 +144,13 @@ function createTreeItem(node, depth) {
     const count = document.createElement('span');
     count.className = 'tree-count';
     const totalCount = node.count || 0;
-    const unreadStr = node.unread ? __(' new') : '';
-    count.textContent = totalCount > 0 ? `${totalCount}${unreadStr}` : '';
+    const unreadCount = node.unread || 0;
+    if (unreadCount > 0) {
+      count.textContent = `${unreadCount}/${totalCount}`;
+      count.classList.add('tree-count-unread');
+    } else if (totalCount > 0) {
+      count.textContent = String(totalCount);
+    }
     main.appendChild(count);
   }
 
@@ -159,6 +167,7 @@ function createTreeItem(node, depth) {
   // ---- Click handler ----
   main.addEventListener('click', (e) => {
     e.stopPropagation();
+    hideContextMenu();
     if (isEmail) {
       // Click on email → show detail view
       selectedEmailNodeId = node.id;
@@ -187,13 +196,16 @@ function createTreeItem(node, depth) {
     e.preventDefault();
     e.stopPropagation();
     if (isEmail) {
-      contextMenuTarget = {type: 'email', id: node.email_id, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null};
+      contextMenuTarget = {type: 'email', id: node.email_id, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null, isRead: !!node.is_read};
       showContextMenu(e.clientX, e.clientY);
     } else if (isImpGroup) {
       contextMenuTarget = {type: 'imp', id: node.imp_group_id, serverId: node.server_id || null};
       showContextMenu(e.clientX, e.clientY);
     } else if (isSenderGroup) {
       contextMenuTarget = {type: 'sender', id: node.sender_group_id, impGroupId: node.imp_group_id, serverId: node.server_id || null};
+      showContextMenu(e.clientX, e.clientY);
+    } else if (node.id === 'inbox') {
+      contextMenuTarget = {type: 'folder', id: 'inbox'};
       showContextMenu(e.clientX, e.clientY);
     }
   });
@@ -426,6 +438,7 @@ function invalidateImpGroupCache() {
 }
 
 function showContextMenu(x, y) {
+  document.getElementById('contextMenu').classList.remove('show');
   const menu = document.getElementById('contextMenu');
   const target = contextMenuTarget;
   if (!target) return;
@@ -453,18 +466,33 @@ function showContextMenu(x, y) {
     });
   });
 
-  // Show/hide delete button based on type
+  const markReadItem = document.getElementById('ctxMarkRead');
+  const markUnreadItem = document.getElementById('ctxMarkUnread');
   const deleteItem = document.getElementById('ctxDeleteAll');
-  const divider = document.getElementById('ctxDivider');
+  const divider1 = document.getElementById('ctxDivider1');
+  const divider2 = document.getElementById('ctxDivider2');
   const moveSection = document.getElementById('ctxMoveSection');
   if (target.type === 'email') {
+    markReadItem.style.display = 'none';
+    markUnreadItem.style.display = 'flex';
+    divider1.style.display = 'block';
+    moveSection.style.display = 'block';
+    divider2.style.display = 'none';
     deleteItem.style.display = 'none';
-    divider.style.display = 'none';
-    moveSection.style.display = 'block';
+  } else if (target.type === 'folder') {
+    markReadItem.style.display = 'flex';
+    markUnreadItem.style.display = 'flex';
+    divider1.style.display = 'none';
+    moveSection.style.display = 'none';
+    divider2.style.display = 'none';
+    deleteItem.style.display = 'none';
   } else {
-    deleteItem.style.display = 'flex';
-    divider.style.display = 'block';
+    markReadItem.style.display = 'flex';
+    markUnreadItem.style.display = 'flex';
+    divider1.style.display = 'block';
     moveSection.style.display = 'block';
+    divider2.style.display = 'block';
+    deleteItem.style.display = 'flex';
   }
 
   menu.style.left = x + 'px';
@@ -524,20 +552,78 @@ function hideContextMenu() {
 }
 
 async function contextDeleteAll() {
+  const target = contextMenuTarget;
   hideContextMenu();
-  if (!contextMenuTarget) return;
+  if (!target) return;
   if (!confirm(__('Delete ALL emails in this group?'))) return;
 
   try {
-    if (contextMenuTarget.type === 'sender') {
-      await api(`/api/emails/group/${contextMenuTarget.id}`, { method: 'DELETE' });
-    } else if (contextMenuTarget.type === 'imp') {
-      await api(`/api/emails/group/importance/${contextMenuTarget.id}`, { method: 'DELETE' });
+    if (target.type === 'sender') {
+      await api(`/api/emails/group/${target.id}`, { method: 'DELETE' });
+    } else if (target.type === 'imp') {
+      await api(`/api/emails/group/importance/${target.id}`, { method: 'DELETE' });
     }
     showEmptyState();
     loadTree();
   } catch (err) {
     alert(__('Failed: {0}', err.message));
+  }
+}
+
+async function markGroupAsRead() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target) return;
+
+  try {
+    if (target.type === 'folder') {
+      await api('/api/emails/mark-read', {
+        method: 'POST',
+        body: { scope: 'folder' },
+      });
+    } else if (target.type === 'imp') {
+      await api('/api/emails/mark-read', {
+        method: 'POST',
+        body: { scope: 'imp', imp_group_id: target.id },
+      });
+    } else if (target.type === 'sender') {
+      await api('/api/emails/mark-read', {
+        method: 'POST',
+        body: { scope: 'sender', sender_group_id: target.id },
+      });
+    }
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to mark as read: {0}', err.message));
+  }
+}
+
+async function markGroupAsUnread() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target) return;
+
+  try {
+    const body = { read: false };
+    if (target.type === 'folder') {
+      body.scope = 'folder';
+    } else if (target.type === 'imp') {
+      body.scope = 'imp';
+      body.imp_group_id = target.id;
+    } else if (target.type === 'sender') {
+      body.scope = 'sender';
+      body.sender_group_id = target.id;
+    } else if (target.type === 'email') {
+      body.scope = 'email';
+      body.email_id = target.id;
+    }
+    await api('/api/emails/mark-read', {
+      method: 'POST',
+      body,
+    });
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to mark as unread: {0}', err.message));
   }
 }
 
