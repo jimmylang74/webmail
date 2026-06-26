@@ -93,6 +93,12 @@
   border-radius: 10px; margin-left: 6px; flex-shrink: 0;
 }
 .tree-item.active .tree-count { background: rgba(255,255,255,0.2); }
+.tree-item .tree-name-input {
+  flex: 1; font-size: 0.85rem; padding: 2px 4px; margin: 0;
+  border: 1px solid var(--accent); border-radius: 3px;
+  background: var(--bg-sidebar-active); color: var(--text-sidebar-active);
+  outline: none; min-width: 0;
+}
 .tree-item .tree-toggle {
   width: 16px; text-align: center; margin-right: 4px; flex-shrink: 0;
   transition: transform 0.15s; font-size: 0.75rem;

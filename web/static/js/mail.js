@@ -130,7 +130,7 @@ function createTreeItem(node, depth) {
   const nameSpan = document.createElement('span');
   nameSpan.className = 'tree-name';
   if (isEmail) {
-    const senderDisplay = node.sender_name || node.sender || '';
+    const senderDisplay = node.sender_group_name || node.sender_name || node.sender || '';
     nameSpan.textContent = senderDisplay ? senderDisplay + ' - ' + (node.name || '') : (node.name || '');
     nameSpan.title = node.name || '';
   } else {
@@ -164,32 +164,57 @@ function createTreeItem(node, depth) {
     main.appendChild(dateSpan);
   }
 
-  // ---- Click handler ----
-  main.addEventListener('click', (e) => {
-    e.stopPropagation();
-    hideContextMenu();
-    if (isEmail) {
-      // Click on email → show detail view
-      selectedEmailNodeId = node.id;
-      document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
-      main.classList.add('active');
-      openEmail(node.email_id);
-    } else if (hasChildren) {
-      // Click on group with children → toggle collapse
-      const childrenContainer = item.querySelector('.tree-children');
-      if (childrenContainer) {
-        childrenContainer.classList.toggle('collapsed');
-        const toggleEl = main.querySelector('.tree-toggle');
-        if (toggleEl) toggleEl.classList.toggle('collapsed');
-      }
-    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
-      // Click on root folder with no children → show empty state
-      showEmptyState();
-    } else if (node.id) {
-      // Any other leaf node
-      showEmptyState();
-    }
-  });
+	  // ---- Click handler ----
+	  main.addEventListener('click', (e) => {
+	    e.stopPropagation();
+	    hideContextMenu();
+	    if (isEmail) {
+	      // Click on email → show detail view
+	      selectedEmailNodeId = node.id;
+	      document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+	      main.classList.add('active');
+	      openEmail(node.email_id);
+	    } else if (isSenderGroup && main.classList.contains('active')) {
+	      // Already selected sender group → enter inline edit mode
+	      // Only trigger if clicking the name area, not the toggle/icon/count
+	      const nameSpan = main.querySelector('.tree-name');
+	      if (nameSpan && (e.target === nameSpan || nameSpan.contains(e.target))) {
+	        startInlineEdit(main, node);
+	        return;
+	      }
+	      // Fall through to toggle collapse for other areas (toggle arrow, icon, etc.)
+	      const childrenContainer = item.querySelector('.tree-children');
+	      if (childrenContainer) {
+	        childrenContainer.classList.toggle('collapsed');
+	        const toggleEl = main.querySelector('.tree-toggle');
+	        if (toggleEl) toggleEl.classList.toggle('collapsed');
+	      }
+	      return;
+	    } else if (hasChildren) {
+	      // Click on group with children → select + toggle collapse
+	      if (isSenderGroup) {
+	        document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+	        main.classList.add('active');
+	      } else if (isImpGroup) {
+	        // Also allow importance groups to be selectable for consistency
+	        document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+	        main.classList.add('active');
+	      }
+	      const childrenContainer = item.querySelector('.tree-children');
+	      if (childrenContainer) {
+	        childrenContainer.classList.toggle('collapsed');
+	        const toggleEl = main.querySelector('.tree-toggle');
+	        if (toggleEl) toggleEl.classList.toggle('collapsed');
+	      }
+	      showEmptyState();
+	    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
+	      // Click on root folder with no children → show empty state
+	      showEmptyState();
+	    } else if (node.id) {
+	      // Any other leaf node
+	      showEmptyState();
+	    }
+	  });
 
   // ---- Right-click handler (context menu) ----
   main.addEventListener('contextmenu', (e) => {
@@ -279,6 +304,46 @@ function createTreeItem(node, depth) {
   }
 
   return item;
+}
+
+function startInlineEdit(main, node) {
+  // Replace the .tree-name span with an input for inline editing
+  const nameSpan = main.querySelector('.tree-name');
+  if (!nameSpan) return;
+  const currentName = nameSpan.textContent;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentName;
+  input.className = 'tree-name-input';
+  input.setAttribute('aria-label', 'Edit sender group name');
+  nameSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  function finishEdit(save) {
+    if (save) {
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        // Save via API, optimistic update the name
+        const origName = nameSpan.textContent;
+        nameSpan.textContent = newName;
+        api(`/api/sender-groups/${node.sender_group_id}`, {
+          method: 'PUT',
+          body: { group_name: newName },
+        }).catch(() => {
+          nameSpan.textContent = origName;
+        });
+      }
+    }
+    input.replaceWith(nameSpan);
+  }
+
+  input.addEventListener('blur', () => finishEdit(true));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { finishEdit(false); }
+  });
 }
 
 function getFolderIcon(iconName) {
@@ -466,34 +531,46 @@ function showContextMenu(x, y) {
     });
   });
 
-  const markReadItem = document.getElementById('ctxMarkRead');
-  const markUnreadItem = document.getElementById('ctxMarkUnread');
-  const deleteItem = document.getElementById('ctxDeleteAll');
-  const divider1 = document.getElementById('ctxDivider1');
-  const divider2 = document.getElementById('ctxDivider2');
-  const moveSection = document.getElementById('ctxMoveSection');
-  if (target.type === 'email') {
-    markReadItem.style.display = 'none';
-    markUnreadItem.style.display = 'flex';
-    divider1.style.display = 'block';
-    moveSection.style.display = 'block';
-    divider2.style.display = 'none';
-    deleteItem.style.display = 'none';
-  } else if (target.type === 'folder') {
-    markReadItem.style.display = 'flex';
-    markUnreadItem.style.display = 'flex';
-    divider1.style.display = 'none';
-    moveSection.style.display = 'none';
-    divider2.style.display = 'none';
-    deleteItem.style.display = 'none';
-  } else {
-    markReadItem.style.display = 'flex';
-    markUnreadItem.style.display = 'flex';
-    divider1.style.display = 'block';
-    moveSection.style.display = 'block';
-    divider2.style.display = 'block';
-    deleteItem.style.display = 'flex';
-  }
+	  const markReadItem = document.getElementById('ctxMarkRead');
+	  const markUnreadItem = document.getElementById('ctxMarkUnread');
+	  const editNameItem = document.getElementById('ctxEditName');
+	  const deleteItem = document.getElementById('ctxDeleteAll');
+	  const divider1 = document.getElementById('ctxDivider1');
+	  const divider2 = document.getElementById('ctxDivider2');
+	  const moveSection = document.getElementById('ctxMoveSection');
+	  if (target.type === 'email') {
+	    markReadItem.style.display = 'none';
+	    markUnreadItem.style.display = 'flex';
+	    editNameItem.style.display = 'none';
+	    divider1.style.display = 'block';
+	    moveSection.style.display = 'block';
+	    divider2.style.display = 'none';
+	    deleteItem.style.display = 'none';
+	  } else if (target.type === 'folder') {
+	    markReadItem.style.display = 'flex';
+	    markUnreadItem.style.display = 'flex';
+	    editNameItem.style.display = 'none';
+	    divider1.style.display = 'none';
+	    moveSection.style.display = 'none';
+	    divider2.style.display = 'none';
+	    deleteItem.style.display = 'none';
+	  } else if (target.type === 'sender') {
+	    markReadItem.style.display = 'flex';
+	    markUnreadItem.style.display = 'flex';
+	    editNameItem.style.display = 'flex';
+	    divider1.style.display = 'block';
+	    moveSection.style.display = 'block';
+	    divider2.style.display = 'block';
+	    deleteItem.style.display = 'flex';
+	  } else {
+	    markReadItem.style.display = 'flex';
+	    markUnreadItem.style.display = 'flex';
+	    editNameItem.style.display = 'none';
+	    divider1.style.display = 'block';
+	    moveSection.style.display = 'block';
+	    divider2.style.display = 'block';
+	    deleteItem.style.display = 'flex';
+	  }
 
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
@@ -549,6 +626,27 @@ async function moveSenderGroupImportance(senderGroupId, impGroupId) {
 function hideContextMenu() {
   document.getElementById('contextMenu').classList.remove('show');
   contextMenuTarget = null;
+}
+
+async function contextEditName() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target || target.type !== 'sender') return;
+
+  const result = await showDialog({ title: __('Edit Name') });
+  if (result === null) return;
+  const trimmed = result.trim();
+  if (!trimmed) return;
+
+  try {
+    await api(`/api/sender-groups/${target.id}`, {
+      method: 'PUT',
+      body: { group_name: trimmed },
+    });
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to update: {0}', err.message));
+  }
 }
 
 async function contextDeleteAll() {
@@ -951,6 +1049,75 @@ async function changeMyPassword(e) {
     if (saved) sidebar.style.width = saved;
   } catch (_) {}
 })();
+
+// ===== Dialog =====
+function showDialog(options) {
+  // Show a modal dialog with a text input. Returns a promise that resolves
+  // with the input value, or null if the user cancelled.
+  return new Promise((resolve) => {
+    const existing = document.getElementById('__dialog');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = '__dialog';
+    overlay.className = 'modal';
+    overlay.style.display = 'flex';
+
+    const content = document.createElement('div');
+    content.className = 'modal-content modal-sm';
+    overlay.appendChild(content);
+
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    const h3 = document.createElement('h3');
+    h3.textContent = options.title || '';
+    header.appendChild(h3);
+    content.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    const group = document.createElement('div');
+    group.className = 'form-group';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = options.value || '';
+    if (options.placeholder) input.placeholder = options.placeholder;
+    group.appendChild(input);
+    body.appendChild(group);
+    content.appendChild(body);
+
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn';
+    cancelBtn.textContent = __('Cancel');
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'btn btn-primary';
+    okBtn.textContent = __('OK');
+    footer.appendChild(cancelBtn);
+    footer.appendChild(okBtn);
+    content.appendChild(footer);
+
+    document.body.appendChild(overlay);
+
+    input.focus();
+    input.select();
+
+    function close(val) {
+      overlay.remove();
+      resolve(val);
+    }
+
+    okBtn.onclick = () => close(input.value);
+    cancelBtn.onclick = () => close(null);
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') close(input.value);
+      if (e.key === 'Escape') close(null);
+    };
+  });
+}
 
 // ===== Helper =====
 function escHtml(str) {

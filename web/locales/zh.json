@@ -98,6 +98,7 @@
   "Forward email required": "请输入转发邮箱地址",
   "Select at least one group": "请至少选择一个分组",
   "(auto)": "（自动）",
+  "Edit Name": "编辑名称",
   "Auto-classification complete!": "自动分类完成！",
   "Forward all emails from a selected group to another email address.": "将选定分组中的所有邮件转发至另一个邮箱地址。",
   "Admin Panel": "管理面板",
