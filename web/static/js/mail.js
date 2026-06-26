@@ -209,6 +209,7 @@ function createTreeItem(node, depth) {
 	      showEmptyState();
 	    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
 	      // Click on root folder with no children → show empty state
+	      // (folders with children are handled by the hasChildren branch above)
 	      showEmptyState();
 	    } else if (node.id) {
 	      // Any other leaf node

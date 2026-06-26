@@ -647,10 +647,36 @@ def api_mailbox_tree():
             "children": _build_inbox_children(user_id, cursor, imp_groups),
         })
 
+    def _folder_email_children(cursor, folder_name):
+        """Build tree email children for non-inbox folders."""
+        cursor.execute(
+            "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
+            "FROM emails WHERE user_id=? AND folder=? "
+            "ORDER BY received_date DESC LIMIT 50",
+            (user_id, folder_name),
+        )
+        return [
+            {
+                "id": f"{folder_name}_{em['id']}",
+                "name": em["subject"] or "(No Subject)",
+                "email_id": em["id"],
+                "sender": em["sender"],
+                "sender_name": em["sender_name"],
+                "is_read": em["is_read"],
+                "received_date": em["received_date"],
+                "server_badge": em["server_badge"],
+                "type": "email",
+            }
+            for em in cursor.fetchall()
+        ]
+
     folders.extend([
-        {"id": "outbox", "name": "Outbox", "icon": "send", "count": stats["outbox"], "children": []},
-        {"id": "drafts", "name": "Drafts", "icon": "file-text", "count": stats["drafts"], "children": []},
-        {"id": "deleted", "name": "Deleted", "icon": "trash-2", "count": stats["deleted"], "children": []},
+        {"id": "outbox", "name": "Outbox", "icon": "send", "count": stats["outbox"],
+         "children": _folder_email_children(cursor, "outbox")},
+        {"id": "drafts", "name": "Drafts", "icon": "file-text", "count": stats["drafts"],
+         "children": _folder_email_children(cursor, "drafts")},
+        {"id": "deleted", "name": "Deleted", "icon": "trash-2", "count": stats["deleted"],
+         "children": _folder_email_children(cursor, "deleted")},
     ])
 
     conn.close()
