@@ -4,6 +4,7 @@ A web-based email client with POP3/IMAP support, automatic email classification,
 sender grouping, and auto-forwarding rules.
 """
 
+import argparse
 import json
 import os
 import threading
@@ -1352,14 +1353,19 @@ scheduler.start()
 # ---------------------------------------------------------------------------
 
 def main():
-    port = Config.LOGIN_PORT
+    parser = argparse.ArgumentParser(description="Email Client - Web Interface")
+    parser.add_argument("--port", "-p", type=int, default=Config.LOGIN_PORT,
+                        help="Server port (default: %(default)s)")
+    args = parser.parse_args()
+
+    port = args.port
     print(f"╔══════════════════════════════════════════════╗")
     print(f"║       Email Client - Web Interface            ║")
     print(f"║──────────────────────────────────────────────║")
     print(f"║  URL:  http://0.0.0.0:{port:<5}                  ║")
     print(f"║  Admin: admin / 1234                         ║")
     print(f"╚══════════════════════════════════════════════╝")
-    app.run(host="0.0.0.0", port=port, debug=os.environ.get("FLASK_DEBUG", "1") == "1")
+    app.run(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
