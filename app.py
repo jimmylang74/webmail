@@ -518,12 +518,18 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
             [user_id, ig["id"]] + server_params,
         )
         imp_count = cursor.fetchone()[0]
+        cursor.execute(
+            f"SELECT COUNT(*) FROM emails WHERE user_id=? AND folder='inbox' AND importance_group_id=? AND is_read=0 {server_where}",
+            [user_id, ig["id"]] + server_params,
+        )
+        imp_unread = cursor.fetchone()[0]
 
         imp_node = {
             "id": f"imp_{ig['id']}{suffix}",
             "name": ig["name"],
             "icon": "flag",
             "count": imp_count,
+            "unread": imp_unread,
             "imp_group_id": ig["id"],
             "children": [],
         }
@@ -541,6 +547,11 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
         )
         for sg in cursor.fetchall():
             if sg["sender_count"] > 0:
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM emails WHERE user_id=? AND folder='inbox' AND sender_group_id=? AND is_read=0 {server_where}",
+                    [user_id, sg["id"]] + server_params,
+                )
+                sg_unread = cursor.fetchone()[0]
                 cursor.execute(
                     f"SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
                     f"FROM emails WHERE user_id=? AND folder='inbox' AND sender_group_id=? AND importance_group_id=? {server_where} "
@@ -569,6 +580,7 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
                     "email": sg["sender_email"],
                     "icon": "user",
                     "count": sg["sender_count"],
+                    "unread": sg_unread,
                     "sender_group_id": sg["id"],
                     "imp_group_id": ig["id"],
                     "children": email_children,
@@ -754,6 +766,66 @@ def api_move_email(email_id):
         process_forward_rules(session["user_id"], email_id)
 
     return jsonify({"success": ok})
+
+
+@app.route("/api/emails/mark-read", methods=["POST"])
+@login_required
+@json_body
+def api_mark_read():
+    """Mark emails as read or unread for a given scope.
+
+    Scope: 'folder' (inbox), 'imp', 'sender', or 'email'.
+    Optional 'read' param (default true) controls read vs unread.
+    """
+    data = request.get_json()
+    user_id = session["user_id"]
+    scope = data.get("scope")
+    is_read = 1 if data.get("read", True) else 0
+
+    valid_scopes = ("folder", "imp", "sender", "email")
+    if scope not in valid_scopes:
+        return jsonify({"error": f"Invalid scope, must be one of {valid_scopes}"}), 400
+
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+
+    if scope == "folder":
+        cursor.execute(
+            "UPDATE emails SET is_read=? WHERE user_id=? AND folder='inbox'",
+            (is_read, user_id),
+        )
+    elif scope == "imp":
+        imp_group_id = data.get("imp_group_id")
+        if not imp_group_id:
+            conn.close()
+            return jsonify({"error": "imp_group_id required"}), 400
+        cursor.execute(
+            "UPDATE emails SET is_read=? WHERE user_id=? AND folder='inbox' AND importance_group_id=?",
+            (is_read, user_id, imp_group_id),
+        )
+    elif scope == "sender":
+        sender_group_id = data.get("sender_group_id")
+        if not sender_group_id:
+            conn.close()
+            return jsonify({"error": "sender_group_id required"}), 400
+        cursor.execute(
+            "UPDATE emails SET is_read=? WHERE user_id=? AND folder='inbox' AND sender_group_id=?",
+            (is_read, user_id, sender_group_id),
+        )
+    elif scope == "email":
+        email_id = data.get("email_id")
+        if not email_id:
+            conn.close()
+            return jsonify({"error": "email_id required"}), 400
+        cursor.execute(
+            "UPDATE emails SET is_read=? WHERE id=? AND user_id=?",
+            (is_read, email_id, user_id),
+        )
+
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    return jsonify({"success": True, "affected": affected})
 
 
 @app.route("/api/emails/<int:email_id>", methods=["DELETE"])
