@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS sender_groups (
     user_id INTEGER NOT NULL,
     sender_email TEXT NOT NULL,
     sender_name TEXT DEFAULT '',
+    sender_domain TEXT NOT NULL DEFAULT '',
     group_name TEXT NOT NULL,
     importance_group_id INTEGER,
     is_auto_classified INTEGER DEFAULT 0,
@@ -228,6 +229,12 @@ def init_user_db(user_id: int):
             conn.commit()
         except sqlite3.OperationalError:
             pass
+
+    try:
+        cursor.execute("ALTER TABLE sender_groups ADD COLUMN sender_domain TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     conn.close()
     _init_user_groups(user_id)

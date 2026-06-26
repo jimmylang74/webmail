@@ -34,6 +34,7 @@ from modules.auth import (
     list_users,
 )
 from modules.email_classify import (
+    _extract_domain,
     auto_classify_senders,
     classify_unclassified_emails,
 )
@@ -926,25 +927,23 @@ def api_move_email_importance(email_id):
         if old_sg and not sender_name:
             sender_name = old_sg["sender_name"]
 
+    sender_domain = _extract_domain(sender_email)
+
     cursor.execute(
         "SELECT sg.id FROM sender_groups sg "
-        "WHERE sg.user_id=? AND sg.sender_email=? AND sg.importance_group_id=?",
-        (user_id, sender_email, target_imp_id),
+        "WHERE sg.user_id=? AND sg.sender_domain=? AND sg.importance_group_id=?",
+        (user_id, sender_domain, target_imp_id),
     )
     target_sg = cursor.fetchone()
 
     if target_sg:
         new_sender_group_id = target_sg["id"]
     else:
-        group_name = (
-            sender_name
-            if sender_name
-            else (sender_email.split("@")[0] if "@" in sender_email else sender_email)
-        )
+        group_name = sender_domain if sender_domain else sender_email
         cursor.execute(
-            "INSERT INTO sender_groups (user_id, sender_email, sender_name, group_name, importance_group_id, is_auto_classified) "
-            "VALUES (?, ?, ?, ?, ?, 0)",
-            (user_id, sender_email, sender_name, group_name, target_imp_id),
+            "INSERT INTO sender_groups (user_id, sender_email, sender_name, sender_domain, group_name, importance_group_id, is_auto_classified) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (user_id, sender_email, sender_name, sender_domain, group_name, target_imp_id),
         )
         new_sender_group_id = cursor.lastrowid
 
@@ -988,10 +987,10 @@ def api_get_sender_groups():
     return jsonify({"sender_groups": groups})
 
 
-def _dedup_sender_groups(cursor, user_id, sender_email):
+def _dedup_sender_groups(cursor, user_id, sender_domain):
     """Consolidate duplicate sender groups to the lowest importance level.
 
-    If a sender has groups in multiple importance levels, all emails are
+    If a domain has sender groups in multiple importance levels, all emails are
     consolidated into the lowest level (Ad < Normal < Important) and the
     higher-level groups are deleted.
     """
@@ -999,8 +998,8 @@ def _dedup_sender_groups(cursor, user_id, sender_email):
         "SELECT sg.id, sg.importance_group_id, ig.sort_order "
         "FROM sender_groups sg "
         "JOIN importance_groups ig ON sg.importance_group_id = ig.id "
-        "WHERE sg.user_id=? AND sg.sender_email=?",
-        (user_id, sender_email),
+        "WHERE sg.user_id=? AND sg.sender_domain=?",
+        (user_id, sender_domain),
     )
     groups = cursor.fetchall()
 
@@ -1062,13 +1061,13 @@ def api_update_sender_group(group_id):
         )
 
         cursor.execute(
-            "SELECT sender_email FROM sender_groups WHERE id=? AND user_id=?",
+            "SELECT sender_domain FROM sender_groups WHERE id=? AND user_id=?",
             (group_id, session["user_id"]),
         )
         sg = cursor.fetchone()
         if sg:
-            sender_email = sg["sender_email"]
-            _dedup_sender_groups(cursor, session["user_id"], sender_email)
+            sender_domain = sg["sender_domain"]
+            _dedup_sender_groups(cursor, session["user_id"], sender_domain)
 
     conn.commit()
     conn.close()

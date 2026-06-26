@@ -350,7 +350,8 @@ async function showAddForwardRule() {
     const sgSelect = document.getElementById('forwardSenderGroup');
     sgSelect.innerHTML = '<option value="">' + __('-- Any Sender --') + '</option>';
     allSenderGroups.forEach(g => {
-      sgSelect.innerHTML += `<option value="${g.id}">${escHtml(g.group_name)} (${escHtml(g.sender_email)})</option>`;
+      const label = g.sender_domain || g.group_name;
+      sgSelect.innerHTML += `<option value="${g.id}">${escHtml(label)}</option>`;
     });
 
     document.getElementById('forwardModal').style.display = 'flex';
@@ -433,10 +434,12 @@ async function loadSenderGroups() {
     allSenderGroups.forEach(g => {
       const card = document.createElement('div');
       card.className = 'sender-card';
+      const domainLabel = g.sender_domain || g.group_name;
+      const emailSample = g.sender_email ? ` &lt;${escHtml(g.sender_email)}&gt;` : '';
       card.innerHTML = `
         <div class="sender-info">
-          <strong>${escHtml(g.group_name)}</strong>
-          <span class="text-muted" style="font-size:0.8rem;"> &lt;${escHtml(g.sender_email)}&gt;</span>
+          <strong>${escHtml(domainLabel)}</strong>
+          <span class="text-muted" style="font-size:0.8rem;">${emailSample}</span>
           ${g.is_auto_classified ? '<span class="text-muted" style="font-size:0.75rem;">' + __('(auto)') + '</span>' : ''}
         </div>
         <div class="sender-actions">

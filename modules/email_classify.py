@@ -98,18 +98,22 @@ def classify_email(sender: str, sender_name: str, subject: str, body_text: str) 
 def get_or_create_sender_group(user_id: int, sender: str, sender_name: str, conn=None) -> dict:
     """Get or create a sender group for a given sender email.
 
-    Auto-classifies as Ad/Normal/Important and assigns importance group.
+    Groups are keyed by the sender's email domain (part after @) rather than
+    the full email address.  All senders sharing the same domain are placed
+    into one sender group.
     """
     own_conn = conn is None
     if own_conn:
         conn = get_user_db(user_id)
     cursor = conn.cursor()
 
+    domain = _extract_domain(sender)
+
     cursor.execute(
         "SELECT sg.*, ig.name as importance_name FROM sender_groups sg "
         "LEFT JOIN importance_groups ig ON sg.importance_group_id = ig.id "
-        "WHERE sg.user_id = ? AND sg.sender_email = ?",
-        (user_id, sender),
+        "WHERE sg.user_id = ? AND sg.sender_domain = ?",
+        (user_id, domain),
     )
     existing = cursor.fetchone()
     if existing:
@@ -118,7 +122,7 @@ def get_or_create_sender_group(user_id: int, sender: str, sender_name: str, conn
         return dict(existing)
 
     importance = classify_email(sender, sender_name, "", "")
-    group_name = sender_name if sender_name else (sender.split("@")[0] if "@" in sender else sender)
+    group_name = domain if domain else sender
 
     cursor.execute(
         "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
@@ -128,9 +132,9 @@ def get_or_create_sender_group(user_id: int, sender: str, sender_name: str, conn
     imp_id = ig["id"] if ig else None
 
     cursor.execute(
-        "INSERT INTO sender_groups (user_id, sender_email, sender_name, group_name, importance_group_id, is_auto_classified) "
-        "VALUES (?, ?, ?, ?, ?, 1)",
-        (user_id, sender, sender_name, group_name, imp_id),
+        "INSERT INTO sender_groups (user_id, sender_email, sender_name, sender_domain, group_name, importance_group_id, is_auto_classified) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1)",
+        (user_id, sender, sender_name, domain, group_name, imp_id),
     )
     new_id = cursor.lastrowid
 
