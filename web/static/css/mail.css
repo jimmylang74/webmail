@@ -23,6 +23,18 @@
 .checkbox-label { display: flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; user-select: none; }
 .checkbox-label input { margin: 0; }
 
+.server-status-bar {
+  display: none; flex-direction: column; background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color); flex-shrink: 0; max-height: 120px; overflow-y: auto;
+}
+.server-status-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-bottom: 1px solid var(--border-color); font-size: 0.85rem;
+}
+.server-status-row:last-child { border-bottom: none; }
+.server-status-name { font-weight: 600; min-width: 120px; color: var(--text-primary); }
+.server-status-mode { color: var(--text-secondary); margin-left: auto; font-variant-numeric: tabular-nums; }
+
 /* ===== User Dropdown ===== */
 .user-dropdown { position: relative; display: inline-block; }
 .user-dropdown-toggle { cursor: pointer; display: flex; align-items: center; gap: 4px; }

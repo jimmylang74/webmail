@@ -12,14 +12,11 @@
     <!-- Top Toolbar -->
     <header class="toolbar">
       <div class="toolbar-left">
-        <button class="btn btn-sm btn-outline" onclick="composeNew()" title="{{ T('Compose') }}">&#9997; {{ T('Compose') }}</button>
-        <button class="btn btn-sm btn-outline" onclick="fetchAll()" title="{{ T('Fetch') }}">&#8635; {{ T('Fetch') }}</button>
         <label class="checkbox-label" title="{{ T('Group by Server') }}">
           <input type="checkbox" id="groupByServer" onchange="toggleGroupByServer(this.checked)">
           {{ T('Group by Server') }}
         </label>
         <span id="fetchStatus" class="fetch-status"></span>
-        <span id="fetchCountdown" class="fetch-countdown" style="display:none;"></span>
       </div>
       <div class="toolbar-center">
         <span class="toolbar-title">{{ T('Email Client') }}</span>
@@ -40,6 +37,8 @@
         </div>
       </div>
     </header>
+
+    <div id="serverStatusBar" class="server-status-bar"></div>
 
     <!-- Main Layout: Tree | Content -->
     <div class="main-layout">

@@ -53,7 +53,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
     loadTree();
     loadServersForCompose();
-    startFetchCountdown();
+    startServerStatusBar();
   }
 });
 
@@ -654,7 +654,6 @@ async function fetchAll() {
   try {
     await api('/api/fetch-all', { method: 'POST' });
     statusEl.textContent = __('Fetch started. Refresh tree shortly.');
-    refreshFetchCountdown();
     setTimeout(() => {
       loadTree();
       statusEl.textContent = '';
@@ -663,11 +662,6 @@ async function fetchAll() {
     statusEl.textContent = __('Fetch failed');
   }
 }
-
-let fetchCountdownTimer = null;
-let fetchCountdownTarget = null;
-let fetchCountdownRefreshing = false;
-let fetchCountdownInterval = null;
 
 function formatCountdown(seconds) {
   if (seconds <= 0) return __('Due');
@@ -679,57 +673,97 @@ function formatCountdown(seconds) {
   return __('{0}s', s);
 }
 
-async function refreshFetchCountdown() {
-  if (fetchCountdownRefreshing) return;
-  fetchCountdownRefreshing = true;
+let serverStatusData = { servers: [] };
+let serverStatusTimer = null;
+let serverStatusRefreshing = false;
+
+async function refreshServerStatusBar() {
+  if (serverStatusRefreshing) return;
+  serverStatusRefreshing = true;
   try {
     const data = await api('/api/next-fetch');
-    const el = document.getElementById('fetchCountdown');
-    if (!el) return;
-
-    if (!data.next_fetch_at) {
-      el.style.display = 'inline';
-      el.textContent = __('Auto fetch (off)');
-      fetchCountdownTarget = null;
-      fetchCountdownInterval = null;
-      return;
-    }
-
-    fetchCountdownTarget = new Date(Date.now() + data.seconds_until * 1000);
-    fetchCountdownInterval = data.interval_minutes;
-    el.style.display = 'inline';
-    updateFetchCountdown();
+    serverStatusData = data;
+    renderServerStatusBar();
   } catch (_) {
   } finally {
-    fetchCountdownRefreshing = false;
+    serverStatusRefreshing = false;
   }
 }
 
-function updateFetchCountdown() {
-  const el = document.getElementById('fetchCountdown');
-  if (!el || !fetchCountdownTarget) return;
+function renderServerStatusBar() {
+  const container = document.getElementById('serverStatusBar');
+  if (!container) return;
+  container.innerHTML = '';
 
-  const ms = fetchCountdownTarget - Date.now();
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  const interval = fetchCountdownInterval != null ? fetchCountdownInterval : 0;
-  if (seconds <= 0) {
-    if (ms > 0) {
-      el.textContent = __('Auto fetch (countdown {0} min): {1}', interval, formatCountdown(1));
-      return;
-    }
-    el.textContent = __('Auto fetch: due');
-    fetchCountdownTarget = null;
-    fetchAll();
+  const servers = serverStatusData.servers || [];
+  if (servers.length === 0) {
+    container.style.display = 'none';
     return;
   }
-  el.textContent = __('Auto fetch (countdown {0} min): {1}', interval, formatCountdown(seconds));
+  container.style.display = 'flex';
+
+  const now = Date.now();
+  servers.forEach(srv => {
+    const row = document.createElement('div');
+    row.className = 'server-status-row';
+
+    let modeText = '';
+    if (srv.mode === 'imap_idle') {
+      modeText = __('IMAP IDLE auto fetch');
+    } else if (srv.mode === 'auto') {
+      const seconds = Math.max(0, srv.seconds_until || 0);
+      modeText = __('Auto fetch (countdown {0} min): {1}', srv.interval_minutes || 0, formatCountdown(seconds));
+    } else {
+      modeText = __('Manual');
+    }
+
+    row.innerHTML = `
+      <span class="server-status-name">${escHtml(srv.server_name)}</span>
+      <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
+      <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})">${__('Fetch')}</button>
+      <span class="server-status-mode">${modeText}</span>
+    `;
+    container.appendChild(row);
+  });
 }
 
-function startFetchCountdown() {
-  refreshFetchCountdown();
-  setInterval(refreshFetchCountdown, 30000);
-  if (!fetchCountdownTimer) {
-    fetchCountdownTimer = setInterval(updateFetchCountdown, 1000);
+function updateServerStatusCountdown() {
+  const container = document.getElementById('serverStatusBar');
+  if (!container) return;
+
+  const rows = container.querySelectorAll('.server-status-row');
+  const servers = serverStatusData.servers || [];
+  rows.forEach((row, idx) => {
+    const srv = servers[idx];
+    if (!srv || srv.mode !== 'auto') return;
+    const modeEl = row.querySelector('.server-status-mode');
+    if (!modeEl) return;
+    const seconds = Math.max(0, (srv.seconds_until || 0) - 1);
+    srv.seconds_until = seconds;
+    modeEl.textContent = __('Auto fetch (countdown {0} min): {1}', srv.interval_minutes || 0, formatCountdown(seconds));
+  });
+}
+
+function startServerStatusBar() {
+  refreshServerStatusBar();
+  setInterval(refreshServerStatusBar, 30000);
+  if (!serverStatusTimer) {
+    serverStatusTimer = setInterval(updateServerStatusCountdown, 1000);
+  }
+}
+
+function composeForServer(serverId) {
+  showCompose(null);
+  const select = document.getElementById('composeServer');
+  if (select) select.value = String(serverId);
+}
+
+async function fetchOneServer(serverId) {
+  try {
+    await api(`/api/servers/${serverId}/fetch`, { method: 'POST' });
+    setTimeout(loadTree, 3000);
+  } catch (err) {
+    alert(__('Failed: {0}', err.message));
   }
 }
 
