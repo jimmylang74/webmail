@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS email_servers (
     use_ssl INTEGER DEFAULT 1,
     last_fetch_at TIMESTAMP,
     fetch_interval_minutes INTEGER DEFAULT 0,
+    imap_idle_supported INTEGER DEFAULT 0,
+    use_imap_idle INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -214,6 +216,19 @@ def init_user_db(user_id: int):
     cursor = conn.cursor()
     cursor.executescript(USER_SCHEMA_SQL)
     conn.commit()
+
+    for col_name, col_def in (
+        ("imap_idle_supported", "INTEGER DEFAULT 0"),
+        ("use_imap_idle", "INTEGER DEFAULT 0"),
+    ):
+        try:
+            cursor.execute(
+                f"ALTER TABLE email_servers ADD COLUMN {col_name} {col_def}"
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
     conn.close()
     _init_user_groups(user_id)
 
