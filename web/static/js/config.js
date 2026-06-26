@@ -29,9 +29,12 @@ async function loadServers() {
       const proto = srv.incoming_protocol || 'POP3';
       const lastFetch = srv.last_fetch_at ? new Date(srv.last_fetch_at).toLocaleString() : __('Never');
       const fetchInterval = srv.fetch_interval_minutes || 0;
-      const intervalLabel = fetchInterval > 0
-        ? ' &middot; ' + __('Auto every {0} min', fetchInterval)
-        : '';
+      let intervalLabel = '';
+      if (srv.use_imap_idle) {
+        intervalLabel = ' &middot; ' + __('IMAP IDLE');
+      } else if (fetchInterval > 0) {
+        intervalLabel = ' &middot; ' + __('Auto every {0} min', fetchInterval);
+      }
       card.innerHTML = `
         <div class="server-info">
           <div class="server-name">${escHtml(srv.server_name)}</div>
@@ -59,6 +62,11 @@ function showAddServer() {
   document.getElementById('serverForm').reset();
   document.getElementById('serverId').value = '';
   document.getElementById('serverError').textContent = '';
+  document.getElementById('imapIdleGroup').style.display = 'none';
+  document.getElementById('useImapIdle').checked = false;
+  document.getElementById('fetchInterval').disabled = false;
+  document.getElementById('checkImapIdleBtn').style.display = 'none';
+  document.getElementById('checkImapIdleMsg').style.display = 'none';
   document.getElementById('serverModal').style.display = 'flex';
 }
 
@@ -85,6 +93,15 @@ async function editServer(id) {
     document.getElementById('useSsl').value = srv.use_ssl ? '1' : '0';
     document.getElementById('deleteAfterDownload').checked = !!srv.delete_after_download;
     document.getElementById('fetchInterval').value = srv.fetch_interval_minutes || 0;
+
+    const isImap = (srv.incoming_protocol || 'POP3').toUpperCase() === 'IMAP';
+    const idleSupported = !!srv.imap_idle_supported;
+    document.getElementById('imapIdleGroup').style.display = (isImap && idleSupported) ? 'block' : 'none';
+    document.getElementById('useImapIdle').checked = !!srv.use_imap_idle;
+    document.getElementById('fetchInterval').disabled = !!srv.use_imap_idle;
+    document.getElementById('checkImapIdleBtn').style.display = isImap ? 'inline-block' : 'none';
+    document.getElementById('checkImapIdleMsg').style.display = 'none';
+
     document.getElementById('serverError').textContent = '';
     document.getElementById('serverModal').style.display = 'flex';
   } catch (err) {
@@ -107,6 +124,7 @@ async function saveServer(e) {
     use_ssl: document.getElementById('useSsl').value === '1',
     delete_after_download: document.getElementById('deleteAfterDownload').checked,
     fetch_interval_minutes: parseInt(document.getElementById('fetchInterval').value) || 0,
+    use_imap_idle: document.getElementById('useImapIdle').checked,
   };
 
   try {
@@ -119,6 +137,89 @@ async function saveServer(e) {
     await loadServers();
   } catch (err) {
     document.getElementById('serverError').textContent = err.message;
+  }
+}
+
+function getServerFormData() {
+  return {
+    incoming_protocol: document.getElementById('incomingProtocol').value,
+    incoming_server: document.getElementById('incomingServer').value.trim(),
+    incoming_port: parseInt(document.getElementById('incomingPort').value) || null,
+    use_ssl: document.getElementById('useSsl').value === '1',
+    username: document.getElementById('emailUsername').value.trim(),
+    password: document.getElementById('emailPassword').value,
+  };
+}
+
+function toggleImapIdle(checked) {
+  document.getElementById('fetchInterval').disabled = checked;
+  if (checked) {
+    document.getElementById('fetchInterval').value = '0';
+  }
+}
+
+function updateImapIdleVisibility() {
+  const proto = document.getElementById('incomingProtocol').value.toUpperCase();
+  const group = document.getElementById('imapIdleGroup');
+  const btn = document.getElementById('checkImapIdleBtn');
+  const msg = document.getElementById('checkImapIdleMsg');
+
+  if (proto !== 'IMAP') {
+    group.style.display = 'none';
+    btn.style.display = 'none';
+    msg.style.display = 'none';
+    document.getElementById('useImapIdle').checked = false;
+    document.getElementById('fetchInterval').disabled = false;
+    return;
+  }
+
+  btn.style.display = 'inline-block';
+}
+
+async function checkImapIdleFromButton() {
+  const server = document.getElementById('incomingServer').value.trim();
+  const btn = document.getElementById('checkImapIdleBtn');
+  const msg = document.getElementById('checkImapIdleMsg');
+  const group = document.getElementById('imapIdleGroup');
+
+  if (!server) {
+    msg.textContent = __('Incoming server required');
+    msg.className = 'form-message form-error';
+    msg.style.display = 'inline';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = __('Checking...');
+  msg.style.display = 'none';
+
+  const serverId = document.getElementById('serverId').value;
+  const cfg = getServerFormData();
+  const url = serverId ? `/api/servers/${serverId}/idle-supported` : '/api/servers/check-idle';
+
+  try {
+    const result = await api(url, { method: 'POST', body: cfg });
+    if (result.success && result.idle_supported) {
+      group.style.display = 'block';
+      msg.textContent = __('IMAP IDLE supported');
+      msg.className = 'form-message form-success';
+    } else {
+      group.style.display = 'none';
+      document.getElementById('useImapIdle').checked = false;
+      document.getElementById('fetchInterval').disabled = false;
+      msg.textContent = __('IMAP IDLE not supported');
+      msg.className = 'form-message form-error';
+    }
+  } catch (err) {
+    group.style.display = 'none';
+    document.getElementById('useImapIdle').checked = false;
+    document.getElementById('fetchInterval').disabled = false;
+    msg.textContent = __('Check failed: {0}', err.message);
+    msg.className = 'form-message form-error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = __('Check IMAP IDLE support');
+    msg.style.display = 'inline';
   }
 }
 
@@ -384,6 +485,8 @@ function escHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+document.getElementById('incomingProtocol').addEventListener('change', updateImapIdleVisibility);
 
 // Close modals on overlay click
 document.addEventListener('click', (e) => {

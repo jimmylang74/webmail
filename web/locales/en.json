@@ -16,5 +16,16 @@
   "Auto fetch: due": "Auto fetch: due",
   "Due": "Due",
   "{0}m {1}s": "{0}m {1}s",
-  "{0}s": "{0}s"
+  "{0}s": "{0}s",
+  "Use IMAP IDLE (push notifications)": "Use IMAP IDLE (push notifications)",
+  "IMAP IDLE": "IMAP IDLE",
+  "IMAP IDLE auto fetch": "IMAP IDLE auto fetch",
+  "Manual": "Manual",
+  "Server Status": "Server Status",
+  "Check IMAP IDLE support": "Check IMAP IDLE support",
+  "Checking...": "Checking...",
+  "IMAP IDLE supported": "IMAP IDLE supported",
+  "IMAP IDLE not supported": "IMAP IDLE not supported",
+  "Check failed: {0}": "Check failed: {0}",
+  "Incoming server required": "Incoming server required"
 }

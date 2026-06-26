@@ -171,5 +171,16 @@
   "Every 6 hours": "每 6 小时",
   "Every 12 hours": "每 12 小时",
   "Every 24 hours": "每 24 小时",
-  "Auto every {0} min": "每 {0} 分钟自动收取"
+  "Auto every {0} min": "每 {0} 分钟自动收取",
+  "Use IMAP IDLE (push notifications)": "使用 IMAP IDLE（推送通知）",
+  "IMAP IDLE": "IMAP IDLE",
+  "IMAP IDLE auto fetch": "IMAP IDLE 自动收取",
+  "Manual": "手动",
+  "Server Status": "服务器状态",
+  "Check IMAP IDLE support": "检测 IMAP IDLE 能力",
+  "Checking...": "检测中...",
+  "IMAP IDLE supported": "支持 IMAP IDLE",
+  "IMAP IDLE not supported": "不支持 IMAP IDLE",
+  "Check failed: {0}": "检测失败：{0}",
+  "Incoming server required": "请输入收件服务器"
 }

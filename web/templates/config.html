@@ -89,6 +89,10 @@
           <div class="form-group">
             <label for="incomingServer">{{ T('Incoming Server (POP3/IMAP)') }}</label>
             <input type="text" id="incomingServer" required placeholder="{{ T('e.g., pop.gmail.com') }}">
+            <button type="button" id="checkImapIdleBtn" class="btn btn-sm btn-outline" style="display:none; margin-top:8px;" onclick="checkImapIdleFromButton()">
+              {{ T('Check IMAP IDLE support') }}
+            </button>
+            <span id="checkImapIdleMsg" class="form-message" style="display:none; margin-left:8px;"></span>
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -101,6 +105,12 @@
                 {{ T('Delete after download') }}
               </label>
             </div>
+          </div>
+          <div id="imapIdleGroup" class="form-group" style="display:none;">
+            <label for="useImapIdle">
+              <input type="checkbox" id="useImapIdle" onchange="toggleImapIdle(this.checked)">
+              {{ T('Use IMAP IDLE (push notifications)') }}
+            </label>
           </div>
           <div class="form-group">
             <label for="fetchInterval">{{ T('Auto-Fetch Interval') }}</label>
