@@ -75,6 +75,26 @@ def _check_and_fetch() -> None:
 
                 if due:
                     _fetch_for_server(row["id"], uid)
+
+            # Safety-net: also fetch IDLE servers if their last fetch was > 5 min ago.
+            # IDLE should handle real-time delivery, but SSL drops can leave gaps.
+            uc.execute(
+                "SELECT id, last_fetch_at FROM email_servers WHERE use_imap_idle = 1"
+            )
+            for row in uc.fetchall():
+                last_fetch = row["last_fetch_at"]
+                due = False
+                if not last_fetch:
+                    due = True
+                else:
+                    try:
+                        last_dt = datetime.fromisoformat(last_fetch)
+                        if now - last_dt >= timedelta(minutes=5):
+                            due = True
+                    except (ValueError, TypeError):
+                        due = True
+                if due:
+                    _fetch_for_server(row["id"], uid)
             uconn.close()
         except Exception as e:
             logger.error("Scheduler error for user %s: %s", uid, e)
@@ -101,6 +121,7 @@ class ImapIdleConnection:
         self.server_config = server_config
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._backoff = 1  # Exponential backoff (seconds) for reconnection
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -120,10 +141,12 @@ class ImapIdleConnection:
         while not self._stop_event.is_set():
             try:
                 self._idle_session()
+                self._backoff = 1  # Reset backoff on successful cycle
             except Exception as e:
                 logger.error("IMAP IDLE session error for server %s: %s", self.server_id, e)
             if not self._stop_event.is_set():
-                time.sleep(30)
+                time.sleep(self._backoff)
+                self._backoff = min(self._backoff * 2, 120)  # Cap at 120s
 
     def _idle_session(self) -> None:
         import imaplib
@@ -133,18 +156,25 @@ class ImapIdleConnection:
             server = imaplib.IMAP4_SSL(
                 cfg["incoming_server"],
                 cfg["incoming_port"] or 993,
-                timeout=15,
+                timeout=30,
             )
         else:
             server = imaplib.IMAP4(
                 cfg["incoming_server"],
                 cfg["incoming_port"] or 143,
-                timeout=15,
+                timeout=30,
             )
 
         try:
             server.login(cfg["username"], cfg["password"])
             server.select("INBOX")
+
+            # Fetch any emails that arrived while the connection was down
+            threading.Thread(
+                target=_fetch_for_server,
+                args=(self.server_id, self.user_id),
+                daemon=True,
+            ).start()
 
             while not self._stop_event.is_set():
                 try:
