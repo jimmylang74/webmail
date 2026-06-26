@@ -147,9 +147,15 @@ class ImapIdleConnection:
             server.select("INBOX")
 
             while not self._stop_event.is_set():
-                self._start_idle(server)
-                new_mail = self._wait_for_idle_event(server)
-                self._stop_idle(server)
+                try:
+                    self._start_idle(server)
+                    new_mail = self._wait_for_idle_event(server)
+                    self._stop_idle(server)
+                except OSError:
+                    # Socket makefile corrupted by a timeout — the whole
+                    # IMAP4 connection object is now unusable.  Reconnect
+                    # from scratch on the next _run iteration.
+                    break
 
                 if new_mail:
                     threading.Thread(
@@ -180,10 +186,16 @@ class ImapIdleConnection:
         raise Exception("IMAP IDLE continuation response timeout")
 
     def _stop_idle(self, server) -> None:
-        server.send(b"DONE\r\n")
+        try:
+            server.send(b"DONE\r\n")
+        except OSError:
+            return
         deadline = time.time() + 10
         while time.time() < deadline:
-            line = server.readline()
+            try:
+                line = server.readline()
+            except OSError:
+                return
             if b" OK" in line or b" NO" in line or b" BAD" in line:
                 return
 
@@ -203,7 +215,11 @@ class ImapIdleConnection:
             except socket.timeout:
                 continue
             except OSError:
-                raise
+                # Once the imaplib makefile enters a timed-out state,
+                # subsequent readline() raises OSError("cannot read from
+                # timed out object") instead of socket.timeout.
+                # Break out so the IDLE session can reconnect cleanly.
+                break
 
             text = line.decode("utf-8", errors="replace")
             if " EXISTS" in text or " RECENT" in text:
