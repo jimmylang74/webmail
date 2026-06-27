@@ -268,7 +268,7 @@ async function testServer(id) {
 }
 
 async function deleteServer(id) {
-  if (!confirm(__('Delete this email server configuration?'))) return;
+  if (!(await showDialog({ title: __('Delete Server'), message: __('Delete this email server configuration?') }))) return;
   try {
     await api(`/api/servers/${id}`, { method: 'DELETE' });
     await loadServers();
@@ -405,7 +405,7 @@ async function toggleForwardRule(id, enabled) {
 }
 
 async function deleteForwardRule(id) {
-  if (!confirm(__('Delete this forward rule?'))) return;
+  if (!(await showDialog({ title: __('Delete Rule'), message: __('Delete this forward rule?') }))) return;
   try {
     await api(`/api/forward-rules/${id}`, { method: 'DELETE' });
     await loadForwardRules();

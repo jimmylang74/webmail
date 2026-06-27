@@ -61,7 +61,7 @@ async function addUser(e) {
 }
 
 async function deleteUser(userId, username) {
-  if (!confirm(__('Delete user "{0}"? This will remove all their data.', username))) return;
+  if (!(await showDialog({ title: __('Delete User'), message: __('Delete user "{0}"? This will remove all their data.', username) }))) return;
   try {
     await api(`/api/admin/users/${userId}/delete`, { method: 'POST' });
     loadUsers();

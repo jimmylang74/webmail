@@ -466,7 +466,7 @@ async function openEmail(emailId) {
 
 async function deleteCurrentEmail() {
   if (!currentState.currentEmailId) return;
-  if (!confirm(__('Move this email to trash?'))) return;
+  if (!(await showDialog({ title: __('Delete Email'), message: __('Move this email to trash?') }))) return;
 
   try {
     await api(`/api/emails/${currentState.currentEmailId}/move`, {
@@ -654,7 +654,7 @@ async function contextDeleteAll() {
   const target = contextMenuTarget;
   hideContextMenu();
   if (!target) return;
-  if (!confirm(__('Delete ALL emails in this group?'))) return;
+  if (!(await showDialog({ title: __('Delete All'), message: __('Delete ALL emails in this group?') }))) return;
 
   try {
     if (target.type === 'sender') {
@@ -1050,75 +1050,6 @@ async function changeMyPassword(e) {
     if (saved) sidebar.style.width = saved;
   } catch (_) {}
 })();
-
-// ===== Dialog =====
-function showDialog(options) {
-  // Show a modal dialog with a text input. Returns a promise that resolves
-  // with the input value, or null if the user cancelled.
-  return new Promise((resolve) => {
-    const existing = document.getElementById('__dialog');
-    if (existing) existing.remove();
-
-    const overlay = document.createElement('div');
-    overlay.id = '__dialog';
-    overlay.className = 'modal';
-    overlay.style.display = 'flex';
-
-    const content = document.createElement('div');
-    content.className = 'modal-content modal-sm';
-    overlay.appendChild(content);
-
-    const header = document.createElement('div');
-    header.className = 'modal-header';
-    const h3 = document.createElement('h3');
-    h3.textContent = options.title || '';
-    header.appendChild(h3);
-    content.appendChild(header);
-
-    const body = document.createElement('div');
-    body.className = 'modal-body';
-    const group = document.createElement('div');
-    group.className = 'form-group';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = options.value || '';
-    if (options.placeholder) input.placeholder = options.placeholder;
-    group.appendChild(input);
-    body.appendChild(group);
-    content.appendChild(body);
-
-    const footer = document.createElement('div');
-    footer.className = 'modal-footer';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'btn';
-    cancelBtn.textContent = __('Cancel');
-    const okBtn = document.createElement('button');
-    okBtn.type = 'button';
-    okBtn.className = 'btn btn-primary';
-    okBtn.textContent = __('OK');
-    footer.appendChild(cancelBtn);
-    footer.appendChild(okBtn);
-    content.appendChild(footer);
-
-    document.body.appendChild(overlay);
-
-    input.focus();
-    input.select();
-
-    function close(val) {
-      overlay.remove();
-      resolve(val);
-    }
-
-    okBtn.onclick = () => close(input.value);
-    cancelBtn.onclick = () => close(null);
-    input.onkeydown = (e) => {
-      if (e.key === 'Enter') close(input.value);
-      if (e.key === 'Escape') close(null);
-    };
-  });
-}
 
 // ===== Helper =====
 function escHtml(str) {
