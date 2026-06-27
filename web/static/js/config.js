@@ -203,11 +203,17 @@ async function checkImapIdleFromButton() {
       group.style.display = 'block';
       msg.textContent = __('IMAP IDLE supported');
       msg.className = 'form-message form-success';
-    } else {
+    } else if (result.success) {
       group.style.display = 'none';
       document.getElementById('useImapIdle').checked = false;
       document.getElementById('fetchInterval').disabled = false;
       msg.textContent = __('IMAP IDLE not supported');
+      msg.className = 'form-message form-error';
+    } else {
+      group.style.display = 'none';
+      document.getElementById('useImapIdle').checked = false;
+      document.getElementById('fetchInterval').disabled = false;
+      msg.textContent = __('Check failed: {0}', result.error || __('Unknown error'));
       msg.className = 'form-message form-error';
     }
   } catch (err) {

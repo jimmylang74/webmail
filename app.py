@@ -409,7 +409,25 @@ def api_test_server(server_id):
     if not server:
         return jsonify({"success": False, "error": "Server not found"}), 404
 
-    result = test_server_connection(dict(server))
+    cfg = dict(server)
+    # Temporarily pause the IDLE connection for this server (if any) so the
+    # test connection does not exceed the server's per-user connection limit.
+    is_idle = (
+        cfg.get("incoming_protocol", "").upper() == "IMAP"
+        and cfg.get("use_imap_idle")
+    )
+    if is_idle:
+        scheduler._idle_manager.pause_connection(
+            session["user_id"], server_id
+        )
+    try:
+        result = test_server_connection(cfg)
+    finally:
+        if is_idle:
+            scheduler._idle_manager.resume_connection(
+                session["user_id"], server_id
+            )
+
     return jsonify(result)
 
 
@@ -439,7 +457,16 @@ def api_server_idle_supported(server_id):
     cfg["username"] = data.get("username", cfg["username"])
     cfg["password"] = data.get("password", cfg["password"])
 
-    result = check_imap_capabilities(cfg)
+    # Temporarily pause any active IDLE connection so the capability check
+    # does not exceed the server's per-user connection limit.
+    is_idle = cfg.get("incoming_protocol", "").upper() == "IMAP" and cfg.get("use_imap_idle")
+    if is_idle:
+        scheduler._idle_manager.pause_connection(session["user_id"], server_id)
+    try:
+        result = check_imap_capabilities(cfg)
+    finally:
+        if is_idle:
+            scheduler._idle_manager.resume_connection(session["user_id"], server_id)
 
     if result["success"] and cfg["incoming_protocol"].upper() == "IMAP":
         uconn = get_user_db(session["user_id"])
