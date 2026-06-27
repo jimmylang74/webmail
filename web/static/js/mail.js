@@ -792,6 +792,7 @@ async function sendEmail(e) {
     if (data.success) {
       statusEl.textContent = __('Sent!');
       statusEl.className = 'compose-status text-success';
+      loadTree();
       setTimeout(() => closeCompose(), 1500);
     } else {
       statusEl.textContent = __('Error: {0}', data.error || __('Failed to send'));
@@ -818,6 +819,7 @@ async function saveDraft() {
     });
     document.getElementById('composeStatus').textContent = __('Draft saved!');
     document.getElementById('composeStatus').className = 'compose-status text-success';
+    loadTree();
   } catch (err) {
     document.getElementById('composeStatus').textContent = __('Error saving draft');
     document.getElementById('composeStatus').className = 'compose-status text-danger';

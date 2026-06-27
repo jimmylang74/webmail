@@ -671,13 +671,72 @@ def api_mailbox_tree():
             for em in cursor.fetchall()
         ]
 
+    def _folder_sender_group_children(cursor, folder_name):
+        children = []
+        cursor.execute(
+            "SELECT sg.id, sg.group_name, sg.sender_email, COUNT(*) as cnt "
+            "FROM emails e JOIN sender_groups sg ON e.sender_group_id = sg.id "
+            "WHERE e.user_id=? AND e.folder=? "
+            "GROUP BY sg.id ORDER BY sg.group_name",
+            (user_id, folder_name),
+        )
+        for sg in cursor.fetchall():
+            cursor.execute(
+                "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
+                "FROM emails WHERE user_id=? AND folder=? AND sender_group_id=? "
+                "ORDER BY received_date DESC LIMIT 50",
+                (user_id, folder_name, sg["id"]),
+            )
+            email_children = [
+                {
+                    "id": f"{folder_name}_{em['id']}",
+                    "name": em["subject"] or "(No Subject)",
+                    "email_id": em["id"],
+                    "sender": em["sender"],
+                    "sender_name": em["sender_name"],
+                    "is_read": em["is_read"],
+                    "received_date": em["received_date"],
+                    "server_badge": em["server_badge"],
+                    "type": "email",
+                }
+                for em in cursor.fetchall()
+            ]
+            children.append({
+                "id": f"{folder_name}_sg_{sg['id']}",
+                "name": sg["group_name"],
+                "email": sg["sender_email"],
+                "icon": "user",
+                "count": sg["cnt"],
+                "sender_group_id": sg["id"],
+                "children": email_children,
+            })
+        cursor.execute(
+            "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
+            "FROM emails WHERE user_id=? AND folder=? AND sender_group_id IS NULL "
+            "ORDER BY received_date DESC LIMIT 50",
+            (user_id, folder_name),
+        )
+        for em in cursor.fetchall():
+            children.append({
+                "id": f"{folder_name}_{em['id']}",
+                "name": em["subject"] or "(No Subject)",
+                "email_id": em["id"],
+                "sender": em["sender"],
+                "sender_name": em["sender_name"],
+                "is_read": em["is_read"],
+                "received_date": em["received_date"],
+                "server_badge": em["server_badge"],
+                "type": "email",
+            })
+        return children
+
     folders.extend([
         {"id": "outbox", "name": "Outbox", "icon": "send", "count": stats["outbox"],
          "children": _folder_email_children(cursor, "outbox")},
         {"id": "drafts", "name": "Drafts", "icon": "file-text", "count": stats["drafts"],
          "children": _folder_email_children(cursor, "drafts")},
         {"id": "deleted", "name": "Deleted", "icon": "trash-2", "count": stats["deleted"],
-         "children": _folder_email_children(cursor, "deleted")},
+         "children": _folder_sender_group_children(cursor, "deleted")},
     ])
 
     conn.close()
@@ -875,11 +934,11 @@ def api_delete_email(email_id):
 @app.route("/api/emails/group/<int:sender_group_id>", methods=["DELETE"])
 @login_required
 def api_delete_group_emails(sender_group_id):
-    """Delete all emails in a sender group."""
+    """Move all emails in a sender group to trash."""
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
     cursor.execute(
-        "DELETE FROM emails WHERE sender_group_id=? AND user_id=?",
+        "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=?",
         (sender_group_id, session["user_id"]),
     )
     conn.commit()
@@ -891,11 +950,11 @@ def api_delete_group_emails(sender_group_id):
 @app.route("/api/emails/group/importance/<int:imp_group_id>", methods=["DELETE"])
 @login_required
 def api_delete_importance_group_emails(imp_group_id):
-    """Delete all emails in an importance group."""
+    """Move all emails in an importance group to trash."""
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
     cursor.execute(
-        "DELETE FROM emails WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
+        "UPDATE emails SET folder='deleted' WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
         (imp_group_id, session["user_id"]),
     )
     conn.commit()
