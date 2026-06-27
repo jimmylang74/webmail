@@ -133,6 +133,15 @@ def fetch_pop3(server_config: dict, max_emails: int = 50) -> list:
 
         for i in range(num_messages, num_messages - fetch_count, -1):
             try:
+                # Get POP3 UIDL for dedup
+                server_uid = ""
+                try:
+                    uidl_resp = server.uidl(i)
+                    if uidl_resp and len(uidl_resp) >= 2 and uidl_resp[1]:
+                        server_uid = uidl_resp[1][0].split()[-1].decode()
+                except Exception:
+                    pass
+
                 raw_email = b"\n".join(server.retr(i)[1])
                 msg = email.message_from_bytes(raw_email)
 
@@ -148,6 +157,7 @@ def fetch_pop3(server_config: dict, max_emails: int = 50) -> list:
 
                 emails_fetched.append({
                     "message_id": message_id,
+                    "server_uid": server_uid,
                     "sender": sender_addr or sender_raw,
                     "sender_name": sender_name or sender_addr,
                     "recipients": recipients,
@@ -271,9 +281,15 @@ def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
 
         for msg_id in msg_ids[-fetch_count:]:
             try:
-                _, msg_data = server.fetch(msg_id, "(RFC822)")
+                _, msg_data = server.fetch(msg_id, "(UID RFC822)")
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
+
+                # Parse IMAP UID from response header
+                server_uid = ""
+                uid_match = re.search(rb"UID (\d+)", msg_data[0][0])
+                if uid_match:
+                    server_uid = uid_match.group(1).decode()
 
                 subject = _decode_mime_header(msg.get("Subject", ""))
                 sender_raw = msg.get("From", "")
@@ -287,6 +303,7 @@ def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
 
                 emails_fetched.append({
                     "message_id": message_id,
+                    "server_uid": server_uid,
                     "sender": sender_addr or sender_raw,
                     "sender_name": sender_name or sender_addr,
                     "recipients": recipients,
@@ -368,19 +385,33 @@ def fetch_emails(server_id: int) -> dict:
     conn = get_user_db(owner_id)
     cursor = conn.cursor()
 
-    # Get existing message IDs to avoid duplicates
+    # Get existing message IDs and server UIDs to avoid duplicates
     cursor.execute(
-        "SELECT message_id FROM emails WHERE user_id = ? AND server_id = ? AND message_id != ''",
+        "SELECT message_id, server_uid FROM emails WHERE user_id = ? AND server_id = ?",
         (owner_id, server_id),
     )
-    existing = set(r["message_id"] for r in cursor.fetchall())
+    existing_uids = {}
+    existing_msg_ids = set()
+    for r in cursor.fetchall():
+        if r["server_uid"]:
+            existing_uids[r["server_uid"]] = True
+        if r["message_id"]:
+            existing_msg_ids.add(r["message_id"])
 
     for email_data in emails:
-        # Skip if message_id exists (dedup)
-        if email_data["message_id"] and email_data["message_id"] in existing:
+        email_uid = email_data.get("server_uid") or ""
+        email_msg_id = email_data.get("message_id") or ""
+
+        # Dedup: prefer server_uid if available, fallback to message_id
+        if email_uid and email_uid in existing_uids:
             continue
-        if email_data["message_id"]:
-            existing.add(email_data["message_id"])
+        if not email_uid and email_msg_id and email_msg_id in existing_msg_ids:
+            continue
+
+        if email_uid:
+            existing_uids[email_uid] = True
+        if email_msg_id:
+            existing_msg_ids.add(email_msg_id)
 
         # Get or create sender group
         sg = get_or_create_sender_group(
@@ -414,15 +445,16 @@ def fetch_emails(server_id: int) -> dict:
 
         cursor.execute(
             "INSERT INTO emails (user_id, server_id, sender_group_id, importance_group_id, "
-            "message_id, sender, sender_name, recipients, subject, body_text, body_html, "
-            "received_date, folder, server_badge) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?)",
+            "message_id, server_uid, sender, sender_name, recipients, subject, body_text, "
+            "body_html, received_date, folder, server_badge) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?)",
             (
                 owner_id,
                 server_id,
                 sg["id"],
                 imp_id,
                 email_data["message_id"],
+                email_data.get("server_uid", ""),
                 email_data["sender"],
                 email_data["sender_name"],
                 email_data["recipients"],

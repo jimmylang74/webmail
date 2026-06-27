@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS emails (
     sender_group_id INTEGER,
     importance_group_id INTEGER,
     message_id TEXT,
+    server_uid TEXT DEFAULT '',
     sender TEXT NOT NULL,
     sender_name TEXT DEFAULT '',
     recipients TEXT,
@@ -141,6 +142,7 @@ CREATE TABLE IF NOT EXISTS forward_rules (
 CREATE INDEX IF NOT EXISTS idx_emails_user_folder ON emails(user_id, folder);
 CREATE INDEX IF NOT EXISTS idx_emails_user_sender ON emails(user_id, sender);
 CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails(message_id);
+CREATE INDEX IF NOT EXISTS idx_emails_server_uid ON emails(server_id, server_uid);
 CREATE INDEX IF NOT EXISTS idx_sender_groups_user ON sender_groups(user_id);
 CREATE INDEX IF NOT EXISTS idx_forward_rules_user ON forward_rules(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_imp_groups_user_name ON importance_groups(user_id, name);
@@ -232,6 +234,12 @@ def init_user_db(user_id: int):
 
     try:
         cursor.execute("ALTER TABLE sender_groups ADD COLUMN sender_domain TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE emails ADD COLUMN server_uid TEXT DEFAULT ''")
         conn.commit()
     except sqlite3.OperationalError:
         pass
