@@ -8,6 +8,8 @@ Also manages long-lived IMAP IDLE connections for servers configured to use
 IMAP IDLE, refreshing them every 29 minutes to keep the connection alive.
 """
 
+from __future__ import annotations
+
 import logging
 import select
 import socket
@@ -40,7 +42,9 @@ def _fetch_for_server(server_id: int, user_id: int) -> None:
         logger.error("Scheduled fetch for server %s failed: %s", server_id, e)
 
 
-def _check_and_fetch() -> None:
+def _check_and_fetch(
+    idle_manager: ImapIdleManager | None = None,
+) -> None:
     """Scan all users' servers and trigger fetches for those that are due."""
     conn = get_global_db()
     cursor = conn.cursor()
@@ -78,10 +82,19 @@ def _check_and_fetch() -> None:
 
             # Safety-net: also fetch IDLE servers if their last fetch was > 5 min ago.
             # IDLE should handle real-time delivery, but SSL drops can leave gaps.
+            # Skip the safety-net fetch when an IDLE connection is already active – a
+            # second parallel connection to the same server can exceed the server's
+            # per-client connection limit.
             uc.execute(
                 "SELECT id, last_fetch_at FROM email_servers WHERE use_imap_idle = 1"
             )
             for row in uc.fetchall():
+                is_active = (
+                    idle_manager is not None
+                    and idle_manager.has_active_connection(uid, row["id"])
+                )
+                if is_active:
+                    continue
                 last_fetch = row["last_fetch_at"]
                 due = False
                 if not last_fetch:
@@ -100,12 +113,15 @@ def _check_and_fetch() -> None:
             logger.error("Scheduler error for user %s: %s", uid, e)
 
 
-def scheduler_loop(stop_event: threading.Event) -> None:
+def scheduler_loop(
+    stop_event: threading.Event,
+    idle_manager: ImapIdleManager | None = None,
+) -> None:
     """Main scheduler loop – runs until *stop_event* is set."""
     logger.info("Email fetch scheduler started (poll every %ss)", POLL_INTERVAL_SECONDS)
     while not stop_event.is_set():
         try:
-            _check_and_fetch()
+            _check_and_fetch(idle_manager=idle_manager)
         except Exception as e:
             logger.error("Scheduler loop error: %s", e)
         stop_event.wait(POLL_INTERVAL_SECONDS)
@@ -296,6 +312,11 @@ class ImapIdleManager:
                 logger.error("IMAP IDLE manager sync error: %s", e)
             self._stop_event.wait(IMAP_IDLE_POLL_SECONDS)
 
+    def has_active_connection(self, user_id: int, server_id: int) -> bool:
+        """Return True if an IDLE connection is currently active for this server."""
+        with self._lock:
+            return (user_id, server_id) in self._connections
+
     def _sync_connections(self) -> None:
         conn = get_global_db()
         cursor = conn.cursor()
@@ -354,7 +375,7 @@ class EmailFetchScheduler:
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=scheduler_loop,
-            args=(self._stop_event,),
+            args=(self._stop_event, self._idle_manager),
             daemon=True,
             name="email-fetch-scheduler",
         )
