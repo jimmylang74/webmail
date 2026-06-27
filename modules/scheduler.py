@@ -11,8 +11,6 @@ IMAP IDLE, refreshing them every 29 minutes to keep the connection alive.
 from __future__ import annotations
 
 import logging
-import select
-import socket
 import threading
 import time
 from datetime import datetime, timedelta
@@ -139,6 +137,15 @@ class ImapIdleConnection:
         self._thread: threading.Thread | None = None
         self._backoff = 1  # Exponential backoff (seconds) for reconnection
 
+    @property
+    def active(self) -> bool:
+        """The connection thread is alive and not being shut down."""
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._stop_event.is_set()
+        )
+
     def start(self) -> None:
         self._thread = threading.Thread(
             target=self._run,
@@ -150,7 +157,7 @@ class ImapIdleConnection:
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=6)
             self._thread = None
 
     def _run(self) -> None:
@@ -165,25 +172,22 @@ class ImapIdleConnection:
                 self._backoff = min(self._backoff * 2, 120)  # Cap at 120s
 
     def _idle_session(self) -> None:
-        import imaplib
+        """IMAP IDLE session using imapclient (select-based timeout, no makefile corruption)."""
+        import imapclient
 
         cfg = self.server_config
-        if cfg["use_ssl"]:
-            server = imaplib.IMAP4_SSL(
-                cfg["incoming_server"],
-                cfg["incoming_port"] or 993,
-                timeout=30,
-            )
-        else:
-            server = imaplib.IMAP4(
-                cfg["incoming_server"],
-                cfg["incoming_port"] or 143,
-                timeout=30,
-            )
+        host = cfg["incoming_server"]
+        port = cfg["incoming_port"] or (993 if cfg["use_ssl"] else 143)
 
+        client = imapclient.IMAPClient(
+            host,
+            port=port,
+            ssl=bool(cfg["use_ssl"]),
+            timeout=30,
+        )
         try:
-            server.login(cfg["username"], cfg["password"])
-            server.select("INBOX")
+            client.login(cfg["username"], cfg["password"])
+            client.select_folder("INBOX")
 
             # Fetch any emails that arrived while the connection was down
             threading.Thread(
@@ -193,17 +197,47 @@ class ImapIdleConnection:
             ).start()
 
             while not self._stop_event.is_set():
+                client.idle()
+                idle_start = time.time()
+                got_mail = False
+                idle_ok = True
                 try:
-                    self._start_idle(server)
-                    new_mail = self._wait_for_idle_event(server)
-                    self._stop_idle(server)
-                except OSError:
-                    # Socket makefile corrupted by a timeout — the whole
-                    # IMAP4 connection object is now unusable.  Reconnect
-                    # from scratch on the next _run iteration.
-                    break
+                    while not self._stop_event.is_set():
+                        elapsed = time.time() - idle_start
+                        remaining = IMAP_IDLE_REFRESH_SECONDS - elapsed
+                        if remaining <= 0:
+                            break
+                        responses = client.idle_check(
+                            timeout=min(remaining, 5),
+                        )
+                        if responses:
+                            got_mail = any(
+                                len(r) >= 2 and r[1] == b"EXISTS"
+                                for r in responses
+                            )
+                            break
+                except Exception:
+                    idle_ok = False
+                finally:
+                    try:
+                        # idle_done() returns (command_text, pending_responses).
+                        # Pending responses are those that arrived between the
+                        # last idle_check() and the DONE command — without
+                        # checking them we can miss EXISTS notifications.
+                        _, pending = client.idle_done()
+                        if pending and not got_mail:
+                            got_mail = any(
+                                len(r) >= 2 and r[1] == b"EXISTS"
+                                for r in pending
+                            )
+                    except Exception:
+                        pass
 
-                if new_mail:
+                if not idle_ok:
+                    break  # connection lost, reconnect in _run
+                if self._stop_event.is_set():
+                    break
+                if got_mail:
                     threading.Thread(
                         target=_fetch_for_server,
                         args=(self.server_id, self.user_id),
@@ -211,67 +245,9 @@ class ImapIdleConnection:
                     ).start()
         finally:
             try:
-                server.close()
+                client.logout()
             except Exception:
                 pass
-            try:
-                server.logout()
-            except Exception:
-                pass
-
-    def _start_idle(self, server) -> None:
-        tag = server._new_tag().decode()
-        server.send(f"{tag} IDLE\r\n".encode())
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            line = server.readline()
-            if line.startswith(b"+"):
-                return
-            if line.startswith(tag.encode() + b" NO") or line.startswith(tag.encode() + b" BAD"):
-                raise Exception(f"IMAP IDLE not accepted: {line}")
-        raise Exception("IMAP IDLE continuation response timeout")
-
-    def _stop_idle(self, server) -> None:
-        try:
-            server.send(b"DONE\r\n")
-        except OSError:
-            return
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            try:
-                line = server.readline()
-            except OSError:
-                return
-            if b" OK" in line or b" NO" in line or b" BAD" in line:
-                return
-
-    def _wait_for_idle_event(self, server) -> bool:
-        idle_start = time.time()
-        new_mail = False
-        while not self._stop_event.is_set():
-            elapsed = time.time() - idle_start
-            remaining = IMAP_IDLE_REFRESH_SECONDS - elapsed
-            if remaining <= 0:
-                break
-
-            sock = server.socket()
-            sock.settimeout(min(remaining, 5))
-            try:
-                line = server.readline()
-            except socket.timeout:
-                continue
-            except OSError:
-                # Once the imaplib makefile enters a timed-out state,
-                # subsequent readline() raises OSError("cannot read from
-                # timed out object") instead of socket.timeout.
-                # Break out so the IDLE session can reconnect cleanly.
-                break
-
-            text = line.decode("utf-8", errors="replace")
-            if " EXISTS" in text or " RECENT" in text:
-                new_mail = True
-                break
-        return new_mail
 
 
 class ImapIdleManager:
@@ -313,9 +289,57 @@ class ImapIdleManager:
             self._stop_event.wait(IMAP_IDLE_POLL_SECONDS)
 
     def has_active_connection(self, user_id: int, server_id: int) -> bool:
-        """Return True if an IDLE connection is currently active for this server."""
+        """Return True if the IDLE connection thread is actually alive for this server.
+
+        A connection whose thread has crashed or is stuck in backoff is no
+        longer active — the safety-net periodic fetch should be allowed to
+        pick up any pending emails.
+        """
         with self._lock:
-            return (user_id, server_id) in self._connections
+            conn = self._connections.get((user_id, server_id))
+        return conn is not None and conn.active
+
+    def pause_connection(self, user_id: int, server_id: int) -> None:
+        """Temporarily stop the IDLE connection for a specific server.
+
+        Used before testing a connection to avoid exceeding the server's
+        per-user connection limit (e.g. Yahoo: 2, Outlook: 5).
+        Call ``resume_connection`` afterward to recreate it.
+        """
+        key = (user_id, server_id)
+        with self._lock:
+            conn = self._connections.pop(key, None)
+        if conn:
+            conn.stop()
+
+    def resume_connection(self, user_id: int, server_id: int) -> None:
+        """Recreate the IDLE connection for this server after ``pause_connection``."""
+        key = (user_id, server_id)
+        with self._lock:
+            if key in self._connections:
+                return  # already active (someone else resumed)
+        try:
+            uconn = get_user_db(user_id)
+            uc = uconn.cursor()
+            uc.execute(
+                "SELECT * FROM email_servers "
+                "WHERE id=? AND incoming_protocol='IMAP' AND use_imap_idle=1",
+                (server_id,),
+            )
+            row = uc.fetchone()
+            uconn.close()
+            if row:
+                cfg = dict(row)
+                new_conn = ImapIdleConnection(user_id, server_id, cfg)
+                new_conn.start()
+                with self._lock:
+                    # Only add if still absent (race check)
+                    if key not in self._connections:
+                        self._connections[key] = new_conn
+        except Exception as e:
+            logger.error(
+                "Failed to resume IDLE connection for server %s: %s", server_id, e
+            )
 
     def _sync_connections(self) -> None:
         conn = get_global_db()

@@ -476,13 +476,20 @@ def test_server_connection(server_config: dict) -> dict:
                     server_config["incoming_port"] or 110,
                     timeout=15,
                 )
-            server.user(server_config["username"])
-            server.pass_(server_config["password"])
-            server.quit()
-            results["incoming"] = {
-                "success": True,
-                "message": f"POP3 {server_config['incoming_server']}: connection and login OK",
-            }
+            try:
+                server.user(server_config["username"])
+                server.pass_(server_config["password"])
+                server.quit()
+                results["incoming"] = {
+                    "success": True,
+                    "message": f"POP3 {server_config['incoming_server']}: connection and login OK",
+                }
+            except Exception:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
+                raise
         elif proto == "IMAP":
             if server_config["use_ssl"]:
                 server = imaplib.IMAP4_SSL(
@@ -496,14 +503,22 @@ def test_server_connection(server_config: dict) -> dict:
                     server_config["incoming_port"] or 143,
                     timeout=15,
                 )
-            server.login(server_config["username"], server_config["password"])
-            server.select("INBOX")
-            server.close()
-            server.logout()
-            results["incoming"] = {
-                "success": True,
-                "message": f"IMAP {server_config['incoming_server']}: connection, login and INBOX select OK",
-            }
+            try:
+                server.login(server_config["username"], server_config["password"])
+                server.select("INBOX")
+                server.close()
+                server.logout()
+                results["incoming"] = {
+                    "success": True,
+                    "message": f"IMAP {server_config['incoming_server']}: connection, login and INBOX select OK",
+                }
+            except Exception:
+                # Ensure the connection is cleaned up on error
+                try:
+                    server.logout()
+                except Exception:
+                    pass
+                raise
         else:
             results["incoming"] = {
                 "success": False,
