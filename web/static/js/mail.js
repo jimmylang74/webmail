@@ -480,9 +480,47 @@ async function deleteCurrentEmail() {
   }
 }
 
-function forwardEmail() {
+async function forwardEmail() {
   if (!currentState.currentEmailId) return;
-  showCompose(__('Forward from email #{0}', currentState.currentEmailId));
+  // Ensure server list is loaded before we try badge matching
+  await (serversLoaded || Promise.resolve());
+  let serverId = null;
+  let fwdSubject = '';
+  let fwdBody = '';
+  try {
+    const data = await api(`/api/emails/${currentState.currentEmailId}`);
+    const email = data.email;
+    if (email) {
+      // Use server_id if available
+      if (email.server_id) {
+        serverId = email.server_id;
+      }
+      // Fallback: server_id is null (e.g. server was deleted, FK set null).
+      // Match by server_badge text, or if only one SMTP server exists, use it.
+      if (!serverId && allServers.length) {
+        const smtpServers = allServers.filter(s => s.outgoing_server);
+        if (smtpServers.length === 1) {
+          serverId = smtpServers[0].id;
+        } else if (email.server_badge) {
+          const match = smtpServers.find(s =>
+            s.server_name === email.server_badge
+            || (s.server_name && email.server_badge && s.server_name.includes(email.server_badge))
+            || (s.server_name && email.server_badge && email.server_badge.includes(s.server_name))
+          );
+          if (match) serverId = match.id;
+        }
+      }
+      fwdSubject = email.subject || '';
+      const date = email.received_date ? new Date(email.received_date).toLocaleString() : '';
+      fwdBody = '---------- Forwarded email ----------\n'
+              + 'From: ' + (email.sender || '') + '\n'
+              + 'Subject: ' + (email.subject || '') + '\n'
+              + (date ? 'Date: ' + date + '\n' : '')
+              + '\n'
+              + (email.body_text || __('(No content)'));
+    }
+  } catch (_) {}
+  showCompose(fwdSubject, serverId, fwdBody);
 }
 
 // ===== Context Menu =====
@@ -734,34 +772,47 @@ document.addEventListener('click', (e) => {
 });
 
 // ===== Compose =====
+let serversLoaded = null; // Promise tracking when server list is populated
+
 async function loadServersForCompose() {
-  try {
-    const data = await api('/api/servers');
-    allServers = data.servers || [];
-    const select = document.getElementById('composeServer');
-    select.innerHTML = '<option value="">' + __('-- Select SMTP Server --') + '</option>';
-    allServers.filter(s => s.outgoing_server).forEach(s => {
-      select.innerHTML += `<option value="${s.id}">${escHtml(s.server_name)} (${escHtml(s.username)})</option>`;
-    });
-  } catch (err) {
-    console.error('Failed to load servers:', err);
-  }
+  const promise = (async () => {
+    try {
+      const data = await api('/api/servers');
+      allServers = data.servers || [];
+      const select = document.getElementById('composeServer');
+      select.innerHTML = '<option value="">' + __('-- Select SMTP Server --') + '</option>';
+      allServers.filter(s => s.outgoing_server).forEach(s => {
+        select.innerHTML += `<option value="${s.id}">${escHtml(s.server_name)} (${escHtml(s.username)})</option>`;
+      });
+    } catch (err) {
+      console.error('Failed to load servers:', err);
+    }
+  })();
+  serversLoaded = promise;
+  return promise;
 }
 
 function composeNew() {
   showCompose(null);
 }
 
-function showCompose(forwardText) {
+function showCompose(subject, preselectServerId, bodyText) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('emailDetailView').style.display = 'none';
   const composeView = document.getElementById('composeView');
   composeView.style.display = 'flex';
   composeView.style.flex = '1';
   document.getElementById('composeTo').value = '';
-  document.getElementById('composeSubject').value = forwardText ? __('Fwd: {0}', forwardText) : '';
-  document.getElementById('composeBody').value = '';
+  document.getElementById('composeSubject').value = subject ? __('Fwd: {0}', subject) : '';
+  document.getElementById('composeBody').value = bodyText || '';
   document.getElementById('composeStatus').textContent = '';
+  if (preselectServerId) {
+    // Ensure server dropdown is populated before selecting
+    (serversLoaded || Promise.resolve()).then(() => {
+      const select = document.getElementById('composeServer');
+      if (select) select.value = String(preselectServerId);
+    });
+  }
 }
 
 function closeCompose() {
