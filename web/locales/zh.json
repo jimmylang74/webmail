@@ -183,5 +183,12 @@
   "IMAP IDLE supported": "支持 IMAP IDLE",
   "IMAP IDLE not supported": "不支持 IMAP IDLE",
   "Check failed: {0}": "检测失败：{0}",
-  "Incoming server required": "请输入收件服务器"
+  "Incoming server required": "请输入收件服务器",
+  "IMAP IDLE auto fetch": "IMAP IDLE 自动收取",
+  "Manual": "手动",
+  "Fetching {0}/{1}": "正在收取 {0}/{1}",
+  "Done": "完成",
+  "Failed": "失败",
+  "Fetch already in progress": "正在收取中",
+  "Fetch started...": "开始收取..."
 }

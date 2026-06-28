@@ -29,5 +29,11 @@
   "IMAP IDLE supported": "IMAP IDLE supported",
   "IMAP IDLE not supported": "IMAP IDLE not supported",
   "Check failed: {0}": "Check failed: {0}",
-  "Incoming server required": "Incoming server required"
+  "Incoming server required": "Incoming server required",
+  "Fetching {0}/{1}": "Fetching {0}/{1}",
+  "Done": "Done",
+  "Failed": "Failed",
+  "Fetch already in progress": "Fetch already in progress",
+  "Fetching...": "Fetching...",
+  "Fetch started...": "Fetch started..."
 }
