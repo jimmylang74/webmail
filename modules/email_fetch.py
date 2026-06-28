@@ -250,6 +250,37 @@ def _parse_capabilities(caps) -> list:
     return raw.decode("utf-8", errors="replace").split()
 
 
+def _send_imap_id(server) -> bool:
+    """Send IMAP ID command (RFC 2971) for servers that require client identification.
+
+    Checks the server's capabilities first — only sends ID if the server
+    advertises support for it (e.g. NetEase 126/Coremail).  Returns True
+    when the ID command completed successfully, False otherwise.
+    """
+    try:
+        _, caps = server.capability()
+        if not caps or not isinstance(caps[0], bytes):
+            return False
+        if b"ID" not in caps[0].split():
+            return False
+
+        tag = server._new_tag().decode("ascii")
+        cmd = f'{tag} ID ("name" "PythonIMAP" "version" "1.0" "vendor" "self")\r\n'
+        server.send(cmd.encode("ascii"))
+        while True:
+            line = server.readline()
+            if not line:
+                break
+            line_str = line.decode("ascii", errors="replace").strip()
+            if line_str.startswith(f"{tag} OK"):
+                return True
+            if line_str.startswith(f"{tag} NO") or line_str.startswith(f"{tag} BAD"):
+                return False
+    except Exception:
+        pass
+    return False
+
+
 def check_imap_capabilities(server_config: dict) -> dict:
     """Connect to an IMAP server and return its capability list.
 
@@ -261,6 +292,7 @@ def check_imap_capabilities(server_config: dict) -> dict:
     """
     result = {"success": False, "capabilities": [], "idle_supported": False, "error": ""}
     server = None
+    prelogin_capabilities = None
     try:
         if server_config["use_ssl"]:
             server = imaplib.IMAP4_SSL(
@@ -275,30 +307,50 @@ def check_imap_capabilities(server_config: dict) -> dict:
                 timeout=15,
             )
 
+        _send_imap_id(server)
         status, caps = server.capability()
         capabilities = _parse_capabilities(caps)
-        if status == "OK" and "IDLE" in capabilities:
-            result["success"] = True
-            result["capabilities"] = capabilities
-            result["idle_supported"] = True
-            try:
-                server.logout()
-            except Exception:
-                pass
-            return result
+        if status == "OK":
+            prelogin_capabilities = capabilities
+            if "IDLE" in capabilities:
+                result["success"] = True
+                result["capabilities"] = capabilities
+                result["idle_supported"] = True
+                try:
+                    server.logout()
+                except Exception:
+                    pass
+                return result
 
         has_credentials = bool(server_config.get("username") and server_config.get("password"))
         if has_credentials:
-            server.login(server_config["username"], server_config["password"])
-            status, caps = server.capability()
-            capabilities = _parse_capabilities(caps)
-            server.logout()
+            try:
+                server.login(server_config["username"], server_config["password"])
+                status, caps = server.capability()
+                capabilities = _parse_capabilities(caps)
+                server.logout()
+                result["success"] = status == "OK"
+                result["capabilities"] = capabilities
+                result["idle_supported"] = "IDLE" in capabilities
+                return result
+            except Exception:
+                if prelogin_capabilities is not None:
+                    result["success"] = True
+                    result["capabilities"] = prelogin_capabilities
+                    result["idle_supported"] = "IDLE" in prelogin_capabilities
+                    return result
+                raise
 
         result["success"] = status == "OK"
         result["capabilities"] = capabilities
         result["idle_supported"] = "IDLE" in capabilities
     except Exception as e:
-        result["error"] = str(e)
+        if prelogin_capabilities is not None and result["capabilities"] == []:
+            result["success"] = True
+            result["capabilities"] = prelogin_capabilities
+            result["idle_supported"] = "IDLE" in prelogin_capabilities
+        else:
+            result["error"] = str(e)
         if server:
             try:
                 server.logout()
@@ -337,6 +389,7 @@ def fetch_imap(
                 timeout=30,
             )
 
+        _send_imap_id(server)
         server.login(server_config["username"], server_config["password"])
         server.select("INBOX")
 
@@ -644,9 +697,24 @@ def test_server_connection(server_config: dict) -> dict:
                     timeout=15,
                 )
             try:
+                _send_imap_id(server)
                 server.login(server_config["username"], server_config["password"])
-                server.select("INBOX")
-                server.close()
+                select_status, select_data = server.select("INBOX")
+                if select_status != "OK":
+                    err_msg = (
+                        select_data[0].decode("utf-8", errors="replace")
+                        if select_data and isinstance(select_data[0], bytes)
+                        else "Unknown error"
+                    )
+                    try:
+                        server.logout()
+                    except Exception:
+                        pass
+                    raise Exception(f"INBOX select failed: {err_msg}")
+                try:
+                    server.close()
+                except Exception:
+                    pass
                 server.logout()
                 results["incoming"] = {
                     "success": True,

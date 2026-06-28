@@ -186,6 +186,12 @@ class ImapIdleConnection:
             timeout=30,
         )
         try:
+            # Coremail IMAP (e.g. 126.com) requires ID command before LOGIN
+            if client.has_capability("ID"):
+                client._raw_command(
+                    b"ID",
+                    [b'("name" "PythonIMAP" "version" "1.0" "vendor" "self")'],
+                )
             client.login(cfg["username"], cfg["password"])
             client.select_folder("INBOX")
 
