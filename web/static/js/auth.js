@@ -110,6 +110,15 @@ async function api(url, options = {}) {
 async function checkSession() {
   try {
     const data = await api('/api/session');
+    const expected = sessionStorage.getItem('expectedUser');
+    if (expected && data.username !== expected) {
+      // Session cookie was overwritten by another tab/window (different user).
+      window.location.href = '/login';
+      return null;
+    }
+    // Track the user for this tab so we can detect cross-tab session takeover.
+    sessionStorage.setItem('expectedUser', data.username);
+
     const display = document.getElementById('userDisplay') || document.getElementById('adminUserDisplay') || document.getElementById('configUserDisplay');
     if (display) display.textContent = data.username + (data.role === 'admin' ? __(' (Admin)') : '');
     const adminLink = document.getElementById('adminLink');
@@ -124,6 +133,9 @@ async function checkSession() {
 }
 
 function logout() {
+  // Clear the per-tab user expectation so a re-login in this tab won't
+  // trigger the cross-tab session takeover guard.
+  sessionStorage.removeItem('expectedUser');
   api('/api/logout', { method: 'POST' }).finally(() => {
     window.location.href = '/login';
   });

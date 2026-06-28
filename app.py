@@ -72,6 +72,7 @@ app = Flask(
 )
 app.config.from_object(Config)
 app.config["SECRET_KEY"] = Config.SECRET_KEY
+app.config["SESSION_COOKIE_NAME"] = f"session_{Config.LOGIN_PORT}"
 
 set_language(Config.LANGUAGE)
 
