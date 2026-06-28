@@ -840,11 +840,8 @@ async function fetchAll() {
   statusEl.textContent = __('Fetching...');
   try {
     await api('/api/fetch-all', { method: 'POST' });
-    statusEl.textContent = __('Fetch started. Refresh tree shortly.');
-    setTimeout(() => {
-      loadTree();
-      statusEl.textContent = '';
-    }, 3000);
+    statusEl.textContent = __('Fetch started...');
+    startFetchProgressPolling();
   } catch (err) {
     statusEl.textContent = __('Fetch failed');
   }
@@ -863,6 +860,62 @@ function formatCountdown(seconds) {
 let serverStatusData = { servers: [] };
 let serverStatusTimer = null;
 let serverStatusRefreshing = false;
+
+let fetchProgressData = {};
+let fetchProgressTimer = null;
+let fetchProgressCount = 0;
+
+async function refreshFetchProgress() {
+  try {
+    const data = await api('/api/fetch-progress');
+    fetchProgressData = data.servers || {};
+    const entries = Object.values(fetchProgressData);
+
+    renderServerStatusBar();
+
+    // Only consider completion when there's actual progress data
+    // (IMAP connection may take 10-30s before progress starts)
+    if (entries.length === 0) {
+      fetchProgressCount = 0;
+      return;
+    }
+
+    const hasActive = entries.some(p => p.status === 'fetching');
+    if (!hasActive) {
+      fetchProgressCount++;
+      if (fetchProgressCount > 3) {  // ~6 seconds after last active
+        stopFetchProgressPolling();
+        loadTree();
+      }
+    } else {
+      fetchProgressCount = 0;
+    }
+  } catch (_) {
+    stopFetchProgressPolling();
+  }
+}
+
+function startFetchProgressPolling() {
+  stopFetchProgressPolling();
+  fetchProgressCount = 0;
+  fetchProgressTimer = setInterval(refreshFetchProgress, 2000);
+  refreshFetchProgress();
+}
+
+function stopFetchProgressPolling() {
+  if (fetchProgressTimer) {
+    clearInterval(fetchProgressTimer);
+    fetchProgressTimer = null;
+  }
+  // Keep final progress data for a bit so UI shows done state
+  const hasFinal = Object.values(fetchProgressData).some(
+    p => p.status === 'done' || p.status === 'error'
+  );
+  if (!hasFinal) {
+    fetchProgressData = {};
+    renderServerStatusBar();
+  }
+}
 
 async function refreshServerStatusBar() {
   if (serverStatusRefreshing) return;
@@ -889,27 +942,54 @@ function renderServerStatusBar() {
   }
   container.style.display = 'flex';
 
-  const now = Date.now();
   servers.forEach(srv => {
     const row = document.createElement('div');
     row.className = 'server-status-row';
 
-    let modeText = '';
-    if (srv.mode === 'imap_idle') {
-      modeText = __('IMAP IDLE auto fetch');
-    } else if (srv.mode === 'auto') {
-      const seconds = Math.max(0, srv.seconds_until || 0);
-      modeText = __('Auto fetch (countdown {0} min): {1}', srv.interval_minutes || 0, formatCountdown(seconds));
-    } else {
-      modeText = __('Manual');
-    }
+    const progress = fetchProgressData[srv.id];
+    const isFetching = progress && progress.status === 'fetching';
+    const isDone = progress && (progress.status === 'done' || progress.status === 'error');
 
-    row.innerHTML = `
-      <span class="server-status-name">${escHtml(srv.server_name)}</span>
-      <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
-      <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})">${__('Fetch')}</button>
-      <span class="server-status-mode">${modeText}</span>
-    `;
+    if (isFetching || isDone) {
+      // Show progress bar
+      const total = progress.total || 0;
+      const current = progress.current || 0;
+      const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+
+      const statusText = isDone
+        ? (progress.status === 'done' ? __('Done') : __('Failed'))
+        : __('Fetching {0}/{1}', current, total);
+
+      row.innerHTML = `
+        <span class="server-status-name">${escHtml(srv.server_name)}</span>
+        <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
+        <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" ${isFetching ? 'disabled' : ''}>${__('Fetch')}</button>
+        <div class="fetch-progress-wrap">
+          <div class="fetch-progress-bar">
+            <div class="fetch-progress-fill" style="width:${pct}%"></div>
+          </div>
+          <span class="fetch-progress-text">${statusText}</span>
+        </div>
+      `;
+    } else {
+      // Normal status display
+      let modeText = '';
+      if (srv.mode === 'imap_idle') {
+        modeText = __('IMAP IDLE auto fetch');
+      } else if (srv.mode === 'auto') {
+        const seconds = Math.max(0, srv.seconds_until || 0);
+        modeText = __('Auto fetch (countdown {0} min): {1}', srv.interval_minutes || 0, formatCountdown(seconds));
+      } else {
+        modeText = __('Manual');
+      }
+
+      row.innerHTML = `
+        <span class="server-status-name">${escHtml(srv.server_name)}</span>
+        <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
+        <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})">${__('Fetch')}</button>
+        <span class="server-status-mode">${modeText}</span>
+      `;
+    }
     container.appendChild(row);
   });
 }
@@ -948,7 +1028,7 @@ function composeForServer(serverId) {
 async function fetchOneServer(serverId) {
   try {
     await api(`/api/servers/${serverId}/fetch`, { method: 'POST' });
-    setTimeout(loadTree, 3000);
+    startFetchProgressPolling();
   } catch (err) {
     alert(__('Failed: {0}', err.message));
   }

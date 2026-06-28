@@ -35,6 +35,22 @@
 .server-status-name { font-weight: 600; min-width: 120px; color: var(--text-primary); }
 .server-status-mode { color: var(--text-secondary); margin-left: auto; font-variant-numeric: tabular-nums; }
 
+/* ===== Fetch Progress Bar ===== */
+.fetch-progress-wrap {
+  display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 180px;
+}
+.fetch-progress-bar {
+  flex: 1; height: 12px; background: var(--bg-primary); border-radius: 6px;
+  overflow: hidden; border: 1px solid var(--border-color); min-width: 80px;
+}
+.fetch-progress-fill {
+  height: 100%; background: linear-gradient(90deg, #4facfe, #00f2fe);
+  border-radius: 6px; transition: width 0.3s ease;
+}
+.fetch-progress-text {
+  font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+
 /* ===== User Dropdown ===== */
 .user-dropdown { position: relative; display: inline-block; }
 .user-dropdown-toggle { cursor: pointer; display: flex; align-items: center; gap: 4px; }
