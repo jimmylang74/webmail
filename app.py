@@ -72,7 +72,7 @@ app = Flask(
 )
 app.config.from_object(Config)
 app.config["SECRET_KEY"] = Config.SECRET_KEY
-app.config["SESSION_COOKIE_NAME"] = f"session_{Config.LOGIN_PORT}"
+# SESSION_COOKIE_NAME is set in main() after CLI port is resolved
 
 set_language(Config.LANGUAGE)
 
@@ -1489,6 +1489,7 @@ def main():
     args = parser.parse_args()
 
     port = args.port
+    app.config["SESSION_COOKIE_NAME"] = f"session_{port}"
     print(f"╔══════════════════════════════════════════════╗")
     print(f"║       Email Client - Web Interface            ║")
     print(f"║──────────────────────────────────────────────║")
