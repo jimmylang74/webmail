@@ -6,6 +6,7 @@ import imaplib
 import poplib
 import re
 import smtplib
+import threading
 import time
 from datetime import datetime
 from email.header import decode_header
@@ -15,6 +16,64 @@ from modules.email_classify import (
     classify_email,
     classify_unclassified_emails,
 )
+
+# ---------------------------------------------------------------------------
+# Fetch progress tracking (shared across threads)
+# ---------------------------------------------------------------------------
+
+_FETCH_PROGRESS: dict[int, dict] = {}
+_FETCH_PROGRESS_LOCK = threading.Lock()
+
+# Per-server fetch-in-progress flag to prevent concurrent fetches
+_FETCH_RUNNING: dict[int, bool] = {}
+_FETCH_RUNNING_LOCK = threading.Lock()
+
+
+def _update_progress(
+    server_id: int,
+    total: int,
+    current: int,
+    status: str,
+    server_name: str = "",
+) -> None:
+    """Update the in-memory fetch progress for a server.
+
+    Status values: 'fetching', 'done', 'error'.
+    """
+    with _FETCH_PROGRESS_LOCK:
+        if status == "idle":
+            _FETCH_PROGRESS.pop(server_id, None)
+            return
+        _FETCH_PROGRESS[server_id] = {
+            "total": total,
+            "current": current,
+            "status": status,
+            "server_name": server_name,
+        }
+
+
+def get_all_fetch_progress() -> dict:
+    """Return a snapshot of all current fetch progress states."""
+    with _FETCH_PROGRESS_LOCK:
+        return dict(_FETCH_PROGRESS)
+
+
+def _try_acquire_fetch_lock(server_id: int) -> bool:
+    """Try to acquire the per-server fetch lock.
+
+    Returns False if a fetch is already in progress for this server.
+    """
+    with _FETCH_RUNNING_LOCK:
+        if _FETCH_RUNNING.get(server_id, False):
+            return False
+        _FETCH_RUNNING[server_id] = True
+        return True
+
+
+def _release_fetch_lock(server_id: int) -> None:
+    """Release the per-server fetch lock."""
+    with _FETCH_RUNNING_LOCK:
+        _FETCH_RUNNING.pop(server_id, None)
 
 
 def _decode_mime_header(header_value: str) -> str:
@@ -248,10 +307,20 @@ def check_imap_capabilities(server_config: dict) -> dict:
     return result
 
 
-def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
-    """Fetch emails from an IMAP server.
+def fetch_imap(
+    server_config: dict,
+    max_emails: int = 50,
+    known_uids: set[str] | None = None,
+    server_id: int | None = None,
+    server_name: str = "",
+) -> list:
+    """Fetch emails from an IMAP server using UID-based incremental fetch.
 
-    Returns list of email dicts.
+    Uses UID SEARCH to get all server UIDs, compares with *known_uids*
+    to only download new emails. Updates global fetch progress when
+    *server_id* is provided.
+
+    Returns list of email dicts with reliable server_uid values.
     """
     emails_fetched = []
     try:
@@ -271,32 +340,61 @@ def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
         server.login(server_config["username"], server_config["password"])
         server.select("INBOX")
 
-        _, data = server.search(None, "ALL")
-        if not data[0]:
+        # Get all UIDs from the server
+        _, data = server.uid("SEARCH", None, "ALL")
+        uids = data[0].split() if data[0] else []
+        # uids is list of bytes like [b'1', b'2', ...]; filter empty
+        uids = [u for u in uids if u.strip()]
+
+        # Filter to only new/unknown UIDs
+        if known_uids:
+            known_bytes = {u.encode() if isinstance(u, str) else u for u in known_uids}
+            new_uids = [u for u in uids if u not in known_bytes]
+        else:
+            new_uids = list(uids)
+
+        # Cap to max_emails (newest first)
+        fetch_uids = new_uids[-max_emails:]
+        fetch_count = len(fetch_uids)
+
+        if fetch_count == 0:
+            server.close()
             server.logout()
+            if server_id is not None:
+                _update_progress(server_id, 0, 0, "done", server_name)
             return []
 
-        msg_ids = data[0].split()
-        fetch_count = min(len(msg_ids), max_emails)
+        _update_progress(server_id or 0, fetch_count, 0, "fetching", server_name)
 
-        for msg_id in msg_ids[-fetch_count:]:
+        seen_msg_ids: set[str] = set()
+        for idx, uid in enumerate(fetch_uids):
             try:
-                _, msg_data = server.fetch(msg_id, "(UID RFC822)")
-                raw_email = msg_data[0][1]
+                _, msg_data = server.uid("FETCH", uid, "(RFC822)")
+                # Extract the raw email body from response
+                raw_email = None
+                for part in msg_data:
+                    if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], bytes):
+                        raw_email = part[1]
+                        break
+                if raw_email is None:
+                    continue
+
                 msg = email.message_from_bytes(raw_email)
 
-                # Parse IMAP UID from response header
-                server_uid = ""
-                uid_match = re.search(rb"UID (\d+)", msg_data[0][0])
-                if uid_match:
-                    server_uid = uid_match.group(1).decode()
+                server_uid = uid.decode() if isinstance(uid, bytes) else str(uid)
 
                 subject = _decode_mime_header(msg.get("Subject", ""))
                 sender_raw = msg.get("From", "")
                 sender_name, sender_addr = _extract_email_address(sender_raw)
                 recipients = _parse_addresses(msg.get("To", ""))
                 date_str = msg.get("Date", "")
-                message_id = msg.get("Message-ID", "")
+                message_id = (msg.get("Message-ID") or "").strip()
+
+                # Dedup by message_id within this batch
+                if message_id and message_id in seen_msg_ids:
+                    continue
+                if message_id:
+                    seen_msg_ids.add(message_id)
 
                 received_date = _parse_email_date(date_str)
                 body_text, body_html = _get_email_body(msg)
@@ -312,20 +410,27 @@ def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
                     "body_html": body_html,
                     "received_date": received_date.isoformat(),
                 })
-            except Exception:
+            except Exception as e:
                 continue
 
-        if server_config["delete_after_download"]:
-            for msg_id in msg_ids[-fetch_count:]:
+            _update_progress(server_id or 0, fetch_count, idx + 1, "fetching", server_name)
+
+        if server_config.get("delete_after_download"):
+            for uid in fetch_uids:
                 try:
-                    server.store(msg_id, "+FLAGS", "\\Deleted")
+                    server.uid("STORE", uid, "+FLAGS", "\\Deleted")
                 except Exception:
                     pass
             server.expunge()
 
         server.close()
         server.logout()
+        if server_id is not None:
+            _update_progress(server_id, fetch_count, fetch_count, "done", server_name)
+
     except Exception as e:
+        if server_id is not None:
+            _update_progress(server_id, 0, 0, "error", server_name)
         raise Exception(f"IMAP fetch failed: {e}")
 
     return emails_fetched
@@ -334,15 +439,11 @@ def fetch_imap(server_config: dict, max_emails: int = 50) -> list:
 def fetch_emails(server_id: int) -> dict:
     """Fetch emails from a server configuration.
 
+    Uses UID-based incremental fetch for IMAP, avoids re-downloading
+    already-known emails. Prevents concurrent fetches for the same server.
+
     Returns result dict with fetched count and any error.
     """
-    # First get the server config (needs global DB for users, but email_servers
-    # is per-user - read from user DB after we find the owner).
-    # Scan all user DBs to find the server.  In practice callers pass a
-    # server_id that belongs to the current user, so we only need a single
-    # lookup.  We optimistically start with user_1, but the real approach
-    # is to accept user_id – however the API only passes server_id, so we
-    # find the owner at runtime.
     from modules import get_user_db_path
     import os
 
@@ -370,117 +471,124 @@ def fetch_emails(server_id: int) -> dict:
     if not server_config:
         return {"success": False, "error": "Server not found"}
 
+    # Prevent concurrent fetches for the same server
+    if not _try_acquire_fetch_lock(server_id):
+        return {"success": True, "fetched": 0, "status": "skipped", "message": "Fetch already in progress"}
+
     try:
+        # Get known UIDs from DB to pass to fetch_imap
+        conn = get_user_db(owner_id)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT server_uid FROM emails WHERE user_id = ? AND server_id = ? AND server_uid != ''",
+            (owner_id, server_id),
+        )
+        known_uids = {r["server_uid"] for r in cursor.fetchall()}
+        conn.close()
+
         if server_config["incoming_protocol"].upper() == "POP3":
             emails = fetch_pop3(server_config)
         elif server_config["incoming_protocol"].upper() == "IMAP":
-            emails = fetch_imap(server_config)
+            server_name = server_config.get("server_name", "")
+            emails = fetch_imap(
+                server_config,
+                known_uids=known_uids,
+                server_id=server_id,
+                server_name=server_name,
+            )
         else:
             return {"success": False, "error": f"Unsupported protocol: {server_config['incoming_protocol']}"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
-    # Store fetched emails in the owner's per-user DB
-    stored_count = 0
-    conn = get_user_db(owner_id)
-    cursor = conn.cursor()
+        # Store fetched emails in the owner's per-user DB
+        stored_count = 0
+        conn = get_user_db(owner_id)
+        cursor = conn.cursor()
 
-    # Get existing message IDs and server UIDs to avoid duplicates
-    cursor.execute(
-        "SELECT message_id, server_uid FROM emails WHERE user_id = ? AND server_id = ?",
-        (owner_id, server_id),
-    )
-    existing_uids = {}
-    existing_msg_ids = set()
-    for r in cursor.fetchall():
-        if r["server_uid"]:
-            existing_uids[r["server_uid"]] = True
-        if r["message_id"]:
-            existing_msg_ids.add(r["message_id"])
+        for email_data in emails:
+            email_uid = email_data.get("server_uid") or ""
+            email_msg_id = email_data.get("message_id") or ""
 
-    for email_data in emails:
-        email_uid = email_data.get("server_uid") or ""
-        email_msg_id = email_data.get("message_id") or ""
+            # Dedup safety (fetch_imap already filters by UID, but handle edge cases)
+            if email_uid:
+                cursor.execute(
+                    "SELECT 1 FROM emails WHERE user_id = ? AND server_id = ? AND server_uid = ?",
+                    (owner_id, server_id, email_uid),
+                )
+                if cursor.fetchone():
+                    continue
 
-        # Dedup: prefer server_uid if available, fallback to message_id
-        if email_uid and email_uid in existing_uids:
-            continue
-        if not email_uid and email_msg_id and email_msg_id in existing_msg_ids:
-            continue
-
-        if email_uid:
-            existing_uids[email_uid] = True
-        if email_msg_id:
-            existing_msg_ids.add(email_msg_id)
-
-        # Get or create sender group
-        sg = get_or_create_sender_group(
-            owner_id,
-            email_data["sender"],
-            email_data["sender_name"],
-            conn=conn,
-        )
-
-        # Get/re-classify importance based on actual content
-        importance = classify_email(
-            email_data["sender"],
-            email_data["sender_name"],
-            email_data["subject"],
-            email_data["body_text"],
-        )
-
-        cursor.execute(
-            "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
-            (owner_id, importance),
-        )
-        ig = cursor.fetchone()
-        imp_id = ig["id"] if ig else None
-
-        # Also update sender group importance if auto-classified
-        if sg["importance_group_id"] is None and imp_id:
-            cursor.execute(
-                "UPDATE sender_groups SET importance_group_id = ?, is_auto_classified = 1 WHERE id = ?",
-                (imp_id, sg["id"]),
-            )
-
-        cursor.execute(
-            "INSERT INTO emails (user_id, server_id, sender_group_id, importance_group_id, "
-            "message_id, server_uid, sender, sender_name, recipients, subject, body_text, "
-            "body_html, received_date, folder, server_badge) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?)",
-            (
+            # Get or create sender group
+            sg = get_or_create_sender_group(
                 owner_id,
-                server_id,
-                sg["id"],
-                imp_id,
-                email_data["message_id"],
-                email_data.get("server_uid", ""),
                 email_data["sender"],
                 email_data["sender_name"],
-                email_data["recipients"],
+                conn=conn,
+            )
+
+            # Get/re-classify importance based on actual content
+            importance = classify_email(
+                email_data["sender"],
+                email_data["sender_name"],
                 email_data["subject"],
                 email_data["body_text"],
-                email_data["body_html"],
-                email_data["received_date"],
-                server_config["server_name"],
-            ),
+            )
+
+            cursor.execute(
+                "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
+                (owner_id, importance),
+            )
+            ig = cursor.fetchone()
+            imp_id = ig["id"] if ig else None
+
+            # Also update sender group importance if auto-classified
+            if sg["importance_group_id"] is None and imp_id:
+                cursor.execute(
+                    "UPDATE sender_groups SET importance_group_id = ?, is_auto_classified = 1 WHERE id = ?",
+                    (imp_id, sg["id"]),
+                )
+
+            cursor.execute(
+                "INSERT INTO emails (user_id, server_id, sender_group_id, importance_group_id, "
+                "message_id, server_uid, sender, sender_name, recipients, subject, body_text, "
+                "body_html, received_date, folder, server_badge) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?)",
+                (
+                    owner_id,
+                    server_id,
+                    sg["id"],
+                    imp_id,
+                    email_data["message_id"],
+                    email_data.get("server_uid", ""),
+                    email_data["sender"],
+                    email_data["sender_name"],
+                    email_data["recipients"],
+                    email_data["subject"],
+                    email_data["body_text"],
+                    email_data["body_html"],
+                    email_data["received_date"],
+                    server_config["server_name"],
+                ),
+            )
+            stored_count += 1
+
+        conn.commit()
+        conn.close()
+
+        # Update last fetch time
+        conn = get_user_db(owner_id)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE email_servers SET last_fetch_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), server_id),
         )
-        stored_count += 1
+        conn.commit()
+        conn.close()
 
-    conn.commit()
-    conn.close()
-
-    # Update last fetch time (in user DB)
-    conn = get_user_db(owner_id)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE email_servers SET last_fetch_at = ? WHERE id = ?",
-        (datetime.utcnow().isoformat(), server_id),
-    )
-    conn.commit()
-    conn.close()
-
-    return {"success": True, "fetched": stored_count}
+        return {"success": True, "fetched": stored_count}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        _release_fetch_lock(server_id)
 
 
 def test_server_connection(server_config: dict) -> dict:
