@@ -924,6 +924,20 @@ async function refreshServerStatusBar() {
     const data = await api('/api/next-fetch');
     serverStatusData = data;
     renderServerStatusBar();
+
+    // If not already polling for fetch progress, check whether the
+    // background scheduler has started an auto-fetch (after countdown
+    // reaches 0 or via IMAP IDLE) and begin polling so the progress bar
+    // appears without requiring a manual "Fetch" click.
+    if (!fetchProgressTimer) {
+      try {
+        const fpData = await api('/api/fetch-progress');
+        const entries = Object.values(fpData.servers || {});
+        if (entries.some(p => p.status === 'fetching')) {
+          startFetchProgressPolling();
+        }
+      } catch (_) {}
+    }
   } catch (_) {
   } finally {
     serverStatusRefreshing = false;
