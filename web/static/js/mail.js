@@ -950,39 +950,34 @@ function renderServerStatusBar() {
     const isFetching = progress && progress.status === 'fetching';
     const isDone = progress && (progress.status === 'done' || progress.status === 'error');
 
-    if (isFetching || isDone) {
-      // Show progress bar
+    let modeText = '';
+    if (srv.mode === 'imap_idle') {
+      modeText = __('IMAP IDLE auto fetch');
+    } else if (srv.mode === 'auto') {
+      const seconds = Math.max(0, srv.seconds_until || 0);
+      modeText = __('Auto fetch (countdown {0} min): {1}', srv.interval_minutes || 0, formatCountdown(seconds));
+    } else {
+      modeText = __('Manual');
+    }
+
+    if (isFetching) {
       const total = progress.total || 0;
       const current = progress.current || 0;
       const pct = total > 0 ? Math.round((current / total) * 100) : 0;
 
-      const statusText = isDone
-        ? (progress.status === 'done' ? __('Done') : __('Failed'))
-        : __('Fetching {0}/{1}', current, total);
-
       row.innerHTML = `
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
-        <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" ${isFetching ? 'disabled' : ''}>${__('Fetch')}</button>
+        <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" disabled>${__('Fetch')}</button>
+        <span class="server-status-mode">${modeText}</span>
         <div class="fetch-progress-wrap">
           <div class="fetch-progress-bar">
             <div class="fetch-progress-fill" style="width:${pct}%"></div>
           </div>
-          <span class="fetch-progress-text">${statusText}</span>
+          <span class="fetch-progress-text">${__('Fetching {0}/{1}', current, total)}</span>
         </div>
       `;
     } else {
-      // Normal status display
-      let modeText = '';
-      if (srv.mode === 'imap_idle') {
-        modeText = __('IMAP IDLE auto fetch');
-      } else if (srv.mode === 'auto') {
-        const seconds = Math.max(0, srv.seconds_until || 0);
-        modeText = __('Auto fetch (countdown {0} min): {1}', srv.interval_minutes || 0, formatCountdown(seconds));
-      } else {
-        modeText = __('Manual');
-      }
-
       row.innerHTML = `
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>

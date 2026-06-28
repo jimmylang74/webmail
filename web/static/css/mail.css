@@ -33,7 +33,7 @@
 }
 .server-status-row:last-child { border-bottom: none; }
 .server-status-name { font-weight: 600; min-width: 120px; color: var(--text-primary); }
-.server-status-mode { color: var(--text-secondary); margin-left: auto; font-variant-numeric: tabular-nums; }
+.server-status-mode { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
 /* ===== Fetch Progress Bar ===== */
 .fetch-progress-wrap {
