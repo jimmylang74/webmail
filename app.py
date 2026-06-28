@@ -388,11 +388,21 @@ def api_update_server(server_id):
 @app.route("/api/servers/<int:server_id>", methods=["DELETE"])
 @login_required
 def api_delete_server(server_id):
-    conn = get_user_db(session["user_id"])
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
     cursor = conn.cursor()
     cursor.execute(
+        "DELETE FROM emails WHERE server_id=? AND user_id=?",
+        (server_id, user_id),
+    )
+    cursor.execute(
+        "DELETE FROM sender_groups WHERE user_id=? AND id NOT IN "
+        "(SELECT DISTINCT sender_group_id FROM emails WHERE sender_group_id IS NOT NULL)",
+        (user_id,),
+    )
+    cursor.execute(
         "DELETE FROM email_servers WHERE id=? AND user_id=?",
-        (server_id, session["user_id"]),
+        (server_id, user_id),
     )
     conn.commit()
     ok = cursor.rowcount > 0
