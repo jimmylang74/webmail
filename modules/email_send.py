@@ -137,17 +137,28 @@ def save_draft(
     conn = get_user_db(user_id)
     cursor = conn.cursor()
 
+    # Look up the server to get the sender (From) address
+    sender = ""
+    if server_id:
+        cursor.execute(
+            "SELECT username FROM email_servers WHERE id = ? AND user_id = ?",
+            (server_id, user_id),
+        )
+        row = cursor.fetchone()
+        if row:
+            sender = row["username"]
+
     if draft_id:
         cursor.execute(
             "UPDATE emails SET sender=?, recipients=?, subject=?, body_text=?, "
             "body_html=?, server_id=? WHERE id=? AND user_id=? AND folder='drafts'",
-            ("", to_addr, subject, body_text, body_html, server_id, draft_id, user_id),
+            (sender, to_addr, subject, body_text, body_html, server_id, draft_id, user_id),
         )
     else:
         cursor.execute(
             "INSERT INTO emails (user_id, server_id, sender, recipients, subject, "
             "body_text, body_html, folder) VALUES (?, ?, ?, ?, ?, ?, ?, 'drafts')",
-            (user_id, server_id, "", to_addr, subject, body_text, body_html),
+            (user_id, server_id, sender, to_addr, subject, body_text, body_html),
         )
         draft_id = cursor.lastrowid
 

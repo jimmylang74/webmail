@@ -9,6 +9,7 @@ let contextMenuTarget = null; // {type: 'imp'|'sender', id: int, serverId: int|n
 // Tree state preservation
 let expandedNodeIds = new Set();
 let selectedEmailNodeId = null;
+let currentDraftId = null;
 
 function saveTreeState() {
   expandedNodeIds.clear();
@@ -459,9 +460,27 @@ async function openEmail(emailId) {
 
     // Refresh tree to update unread counts (preserves expanded/selected state)
     loadTree();
+
+    // Show "Edit Draft" button for draft emails
+    const editDraftBtn = document.getElementById('editDraftBtn');
+    if (editDraftBtn) {
+      editDraftBtn.style.display = (email.folder === 'drafts') ? '' : 'none';
+    }
   } catch (err) {
     alert(__('Failed to load email: {0}', err.message));
   }
+}
+
+async function editDraft() {
+  if (!currentState.currentEmailId) return;
+  try {
+    const data = await api(`/api/emails/${currentState.currentEmailId}`);
+    const email = data.email;
+    if (email.folder !== 'drafts') return;
+    // Ensure server list is loaded before selecting
+    await (serversLoaded || Promise.resolve());
+    showCompose(email.subject, email.server_id, email.body_text, email.recipients, email.id);
+  } catch (_) {}
 }
 
 async function deleteCurrentEmail() {
@@ -796,16 +815,17 @@ function composeNew() {
   showCompose(null);
 }
 
-function showCompose(subject, preselectServerId, bodyText) {
+function showCompose(subject, preselectServerId, bodyText, recipients, draftId) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('emailDetailView').style.display = 'none';
   const composeView = document.getElementById('composeView');
   composeView.style.display = 'flex';
   composeView.style.flex = '1';
-  document.getElementById('composeTo').value = '';
-  document.getElementById('composeSubject').value = subject ? __('Fwd: {0}', subject) : '';
+  document.getElementById('composeTo').value = recipients || '';
+  document.getElementById('composeSubject').value = (subject || '');
   document.getElementById('composeBody').value = bodyText || '';
   document.getElementById('composeStatus').textContent = '';
+  currentDraftId = draftId || null;
   if (preselectServerId) {
     // Ensure server dropdown is populated before selecting
     (serversLoaded || Promise.resolve()).then(() => {
@@ -819,6 +839,7 @@ function closeCompose() {
   const composeView = document.getElementById('composeView');
   composeView.style.display = 'none';
   composeView.style.flex = '';
+  currentDraftId = null;
   showEmptyState();
 }
 
@@ -859,15 +880,22 @@ async function sendEmail(e) {
 
 async function saveDraft() {
   try {
+    const body = {
+      server_id: parseInt(document.getElementById('composeServer').value) || null,
+      to: document.getElementById('composeTo').value.trim(),
+      subject: document.getElementById('composeSubject').value.trim(),
+      body_text: document.getElementById('composeBody').value,
+    };
+    if (currentDraftId) {
+      body.draft_id = currentDraftId;
+    }
     const data = await api('/api/drafts', {
       method: 'POST',
-      body: {
-        server_id: parseInt(document.getElementById('composeServer').value) || null,
-        to: document.getElementById('composeTo').value.trim(),
-        subject: document.getElementById('composeSubject').value.trim(),
-        body_text: document.getElementById('composeBody').value,
-      },
+      body,
     });
+    if (data.draft_id) {
+      currentDraftId = data.draft_id;
+    }
     document.getElementById('composeStatus').textContent = __('Draft saved!');
     document.getElementById('composeStatus').className = 'compose-status text-success';
     loadTree();
