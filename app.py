@@ -184,6 +184,18 @@ def api_login():
     username = data.get("username", "").strip()
     password = data.get("password", "")
 
+    existing_id = session.get("user_id")
+    if existing_id is not None:
+        user = authenticate(username, password)
+        if user and user["id"] != existing_id:
+            return jsonify({
+                "success": False,
+                "error": "请先退出当前账号再登录其他账号（同一浏览器无法同时登录不同账号）",
+            }), 409
+        if user:
+            return jsonify({"success": True, "role": user["role"]})
+        return jsonify({"success": False, "error": "Invalid credentials"}), 401
+
     user = authenticate(username, password)
     if user:
         session["user_id"] = user["id"]
