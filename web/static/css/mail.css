@@ -37,7 +37,7 @@
 
 /* ===== Fetch Progress Bar ===== */
 .fetch-progress-wrap {
-  display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 180px;
+  display: flex; align-items: center; gap: 8px; min-width: 180px;
 }
 .fetch-progress-bar {
   flex: 1; height: 12px; background: var(--bg-primary); border-radius: 6px;
