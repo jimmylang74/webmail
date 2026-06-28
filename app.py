@@ -6,6 +6,7 @@ sender grouping, and auto-forwarding rules.
 
 import argparse
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timedelta
@@ -39,7 +40,7 @@ from modules.email_classify import (
     auto_classify_senders,
     classify_unclassified_emails,
 )
-from modules.email_fetch import fetch_all_for_user, fetch_emails, test_server_connection, check_imap_capabilities
+from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, test_server_connection, check_imap_capabilities
 from modules.email_send import save_draft, send_email
 from modules.forward import (
     create_forward_rule,
@@ -49,6 +50,16 @@ from modules.forward import (
     update_forward_rule,
 )
 from modules.scheduler import scheduler
+
+# ---------------------------------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -387,6 +398,8 @@ def api_fetch_server(server_id):
         if result.get("success"):
             classify_unclassified_emails(user_id)
             auto_classify_senders(user_id)
+        elif not result.get("success"):
+            logging.error("Fetch failed for server %d: %s", server_id, result.get("error"))
 
     thread = threading.Thread(target=_fetch_and_fwd, daemon=True)
     thread.start()
@@ -1312,6 +1325,14 @@ def api_delete_forward_rule(rule_id):
 def api_stats():
     stats = _folder_stats(session["user_id"])
     return jsonify(stats)
+
+
+@app.route("/api/fetch-progress", methods=["GET"])
+@login_required
+def api_fetch_progress():
+    """Return current fetch progress for all servers."""
+    progress = get_all_fetch_progress()
+    return jsonify({"servers": progress})
 
 
 @app.route("/api/next-fetch", methods=["GET"])

@@ -216,7 +216,8 @@ class ImapIdleConnection:
                                 for r in responses
                             )
                             break
-                except Exception:
+                except Exception as idle_err:
+                    logger.error("IMAP idle_check error for server %s: %s", self.server_id, idle_err)
                     idle_ok = False
                 finally:
                     try:
@@ -230,8 +231,8 @@ class ImapIdleConnection:
                                 len(r) >= 2 and r[1] == b"EXISTS"
                                 for r in pending
                             )
-                    except Exception:
-                        pass
+                    except Exception as done_err:
+                        logger.error("IMAP idle_done error for server %s: %s", self.server_id, done_err)
 
                 if not idle_ok:
                     break  # connection lost, reconnect in _run
