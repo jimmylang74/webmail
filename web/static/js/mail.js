@@ -1506,7 +1506,7 @@ function createContactTreeItem(contact, isFav) {
   });
 
   item.addEventListener('dblclick', () => {
-    showCompose(null);
+    showCompose(null, contact.default_server_id);
     const toField = document.getElementById('composeTo');
     if (toField) {
       toField.value = contact.email;
