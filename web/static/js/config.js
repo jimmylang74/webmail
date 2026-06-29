@@ -280,6 +280,7 @@ async function deleteServer(id) {
   try {
     await api(`/api/servers/${id}`, { method: 'DELETE' });
     await loadServers();
+    await loadSenderGroups();
   } catch (err) {
     alert(__('Failed to delete server: {0}', err.message));
   }
