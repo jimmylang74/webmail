@@ -187,6 +187,7 @@
   "IMAP IDLE auto fetch": "IMAP IDLE 自动收取",
   "Manual": "手动",
   "Fetching {0}/{1}": "正在收取 {0}/{1}",
+  "Downloading {0}/{1}": "正在下载 {0}/{1}",
   "Done": "完成",
   "Failed": "失败",
   "Fetch already in progress": "正在收取中",

@@ -959,7 +959,7 @@ async function refreshFetchProgress() {
       return;
     }
 
-    const hasActive = entries.some(p => p.status === 'fetching');
+    const hasActive = entries.some(p => p.status === 'fetching' || p.status === 'downloading');
     if (!hasActive) {
       fetchProgressCount++;
       if (fetchProgressCount > 3) {  // ~6 seconds after last active
@@ -1012,7 +1012,7 @@ async function refreshServerStatusBar() {
       try {
         const fpData = await api('/api/fetch-progress');
         const entries = Object.values(fpData.servers || {});
-        if (entries.some(p => p.status === 'fetching')) {
+        if (entries.some(p => p.status === 'fetching' || p.status === 'downloading')) {
           startFetchProgressPolling();
         }
       } catch (_) {}
@@ -1041,6 +1041,7 @@ function renderServerStatusBar() {
 
     const progress = fetchProgressData[srv.id];
     const isFetching = progress && progress.status === 'fetching';
+    const isDownloading = progress && progress.status === 'downloading';
     const isDone = progress && (progress.status === 'done' || progress.status === 'error');
 
     let modeText = '';
@@ -1062,6 +1063,7 @@ function renderServerStatusBar() {
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
         <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" disabled>${__('Fetch')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Download All')}</button>
         <span class="server-status-mode">${modeText}</span>
         <div class="fetch-progress-wrap">
           <div class="fetch-progress-bar">
@@ -1070,11 +1072,30 @@ function renderServerStatusBar() {
           <span class="fetch-progress-text">${__('Fetching {0}/{1}', current, total)}</span>
         </div>
       `;
+    } else if (isDownloading) {
+      const total = progress.total || 0;
+      const current = progress.current || 0;
+      const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+
+      row.innerHTML = `
+        <span class="server-status-name">${escHtml(srv.server_name)}</span>
+        <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
+        <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" disabled>${__('Fetch')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Download All')}</button>
+        <span class="server-status-mode">${modeText}</span>
+        <div class="fetch-progress-wrap">
+          <div class="fetch-progress-bar">
+            <div class="fetch-progress-fill download-all-fill" style="width:${pct}%"></div>
+          </div>
+          <span class="fetch-progress-text">${__('Downloading {0}/{1}', current, total)}</span>
+        </div>
+      `;
     } else {
       row.innerHTML = `
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
         <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})">${__('Fetch')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})">${__('Download All')}</button>
         <span class="server-status-mode">${modeText}</span>
       `;
     }
@@ -1116,6 +1137,15 @@ function composeForServer(serverId) {
 async function fetchOneServer(serverId) {
   try {
     await api(`/api/servers/${serverId}/fetch`, { method: 'POST' });
+    startFetchProgressPolling();
+  } catch (err) {
+    alert(__('Failed: {0}', err.message));
+  }
+}
+
+async function downloadAllServer(serverId) {
+  try {
+    await api(`/api/servers/${serverId}/download-all`, { method: 'POST' });
     startFetchProgressPolling();
   } catch (err) {
     alert(__('Failed: {0}', err.message));

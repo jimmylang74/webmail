@@ -489,6 +489,88 @@ def fetch_imap(
     return emails_fetched
 
 
+def _store_emails(emails: list, owner_id: int, server_id: int, server_config: dict) -> int:
+    """Store fetched email dicts into the user's database.
+
+    Handles dedup by server_uid, creates sender groups, and classifies
+    importance. Returns the number of newly stored emails.
+    """
+    stored_count = 0
+    conn = get_user_db(owner_id)
+    cursor = conn.cursor()
+
+    for email_data in emails:
+        email_uid = email_data.get("server_uid") or ""
+        email_msg_id = email_data.get("message_id") or ""
+
+        # Dedup safety (fetch_imap already filters by UID, but handle edge cases)
+        if email_uid:
+            cursor.execute(
+                "SELECT 1 FROM emails WHERE user_id = ? AND server_id = ? AND server_uid = ?",
+                (owner_id, server_id, email_uid),
+            )
+            if cursor.fetchone():
+                continue
+
+        # Get or create sender group
+        sg = get_or_create_sender_group(
+            owner_id,
+            email_data["sender"],
+            email_data["sender_name"],
+            conn=conn,
+        )
+
+        # Get/re-classify importance based on actual content
+        importance = classify_email(
+            email_data["sender"],
+            email_data["sender_name"],
+            email_data["subject"],
+            email_data["body_text"],
+        )
+
+        cursor.execute(
+            "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
+            (owner_id, importance),
+        )
+        ig = cursor.fetchone()
+        imp_id = ig["id"] if ig else None
+
+        # Also update sender group importance if auto-classified
+        if sg["importance_group_id"] is None and imp_id:
+            cursor.execute(
+                "UPDATE sender_groups SET importance_group_id = ?, is_auto_classified = 1 WHERE id = ?",
+                (imp_id, sg["id"]),
+            )
+
+        cursor.execute(
+            "INSERT INTO emails (user_id, server_id, sender_group_id, importance_group_id, "
+            "message_id, server_uid, sender, sender_name, recipients, subject, body_text, "
+            "body_html, received_date, folder, server_badge) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?)",
+            (
+                owner_id,
+                server_id,
+                sg["id"],
+                imp_id,
+                email_data["message_id"],
+                email_data.get("server_uid", ""),
+                email_data["sender"],
+                email_data["sender_name"],
+                email_data["recipients"],
+                email_data["subject"],
+                email_data["body_text"],
+                email_data["body_html"],
+                email_data["received_date"],
+                server_config["server_name"],
+            ),
+        )
+        stored_count += 1
+
+    conn.commit()
+    conn.close()
+    return stored_count
+
+
 def fetch_emails(server_id: int) -> dict:
     """Fetch emails from a server configuration.
 
@@ -539,12 +621,18 @@ def fetch_emails(server_id: int) -> dict:
         known_uids = {r["server_uid"] for r in cursor.fetchall()}
         conn.close()
 
+        max_emails = server_config.get("max_emails_per_fetch", 50)
+        # -1 means "all" — use a large sentinel value
+        if max_emails is None or max_emails == -1:
+            max_emails = 999999
+
         if server_config["incoming_protocol"].upper() == "POP3":
-            emails = fetch_pop3(server_config)
+            emails = fetch_pop3(server_config, max_emails=max_emails)
         elif server_config["incoming_protocol"].upper() == "IMAP":
             server_name = server_config.get("server_name", "")
             emails = fetch_imap(
                 server_config,
+                max_emails=max_emails,
                 known_uids=known_uids,
                 server_id=server_id,
                 server_name=server_name,
@@ -552,80 +640,7 @@ def fetch_emails(server_id: int) -> dict:
         else:
             return {"success": False, "error": f"Unsupported protocol: {server_config['incoming_protocol']}"}
 
-        # Store fetched emails in the owner's per-user DB
-        stored_count = 0
-        conn = get_user_db(owner_id)
-        cursor = conn.cursor()
-
-        for email_data in emails:
-            email_uid = email_data.get("server_uid") or ""
-            email_msg_id = email_data.get("message_id") or ""
-
-            # Dedup safety (fetch_imap already filters by UID, but handle edge cases)
-            if email_uid:
-                cursor.execute(
-                    "SELECT 1 FROM emails WHERE user_id = ? AND server_id = ? AND server_uid = ?",
-                    (owner_id, server_id, email_uid),
-                )
-                if cursor.fetchone():
-                    continue
-
-            # Get or create sender group
-            sg = get_or_create_sender_group(
-                owner_id,
-                email_data["sender"],
-                email_data["sender_name"],
-                conn=conn,
-            )
-
-            # Get/re-classify importance based on actual content
-            importance = classify_email(
-                email_data["sender"],
-                email_data["sender_name"],
-                email_data["subject"],
-                email_data["body_text"],
-            )
-
-            cursor.execute(
-                "SELECT id FROM importance_groups WHERE user_id = ? AND name = ?",
-                (owner_id, importance),
-            )
-            ig = cursor.fetchone()
-            imp_id = ig["id"] if ig else None
-
-            # Also update sender group importance if auto-classified
-            if sg["importance_group_id"] is None and imp_id:
-                cursor.execute(
-                    "UPDATE sender_groups SET importance_group_id = ?, is_auto_classified = 1 WHERE id = ?",
-                    (imp_id, sg["id"]),
-                )
-
-            cursor.execute(
-                "INSERT INTO emails (user_id, server_id, sender_group_id, importance_group_id, "
-                "message_id, server_uid, sender, sender_name, recipients, subject, body_text, "
-                "body_html, received_date, folder, server_badge) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox', ?)",
-                (
-                    owner_id,
-                    server_id,
-                    sg["id"],
-                    imp_id,
-                    email_data["message_id"],
-                    email_data.get("server_uid", ""),
-                    email_data["sender"],
-                    email_data["sender_name"],
-                    email_data["recipients"],
-                    email_data["subject"],
-                    email_data["body_text"],
-                    email_data["body_html"],
-                    email_data["received_date"],
-                    server_config["server_name"],
-                ),
-            )
-            stored_count += 1
-
-        conn.commit()
-        conn.close()
+        stored_count = _store_emails(emails, owner_id, server_id, server_config)
 
         # Update last fetch time
         conn = get_user_db(owner_id)
@@ -642,6 +657,308 @@ def fetch_emails(server_id: int) -> dict:
         return {"success": False, "error": str(e)}
     finally:
         _release_fetch_lock(server_id)
+
+
+def download_all_emails(server_id: int, user_id: int) -> dict:
+    """Download ALL emails from a server, batching by max_emails_per_fetch.
+
+    For IMAP: loops calling fetch_imap with updated known_uids until all
+    new UIDs are downloaded. For POP3: gets all UIDs via UIDL, filters
+    to new ones, downloads them all.
+
+    Uses the same progress tracking as regular fetch so the frontend
+    can poll /api/fetch-progress.
+    """
+    from modules import get_user_db_path
+    import os
+
+    user_db_dir = os.path.dirname(get_user_db_path(0))
+    server_config = None
+    owner_id = None
+
+    if os.path.isdir(user_db_dir):
+        for fname in os.listdir(user_db_dir):
+            if fname.startswith("user_") and fname.endswith(".db"):
+                uid = int(fname[5:-3])
+                try:
+                    conn = get_user_db(uid)
+                    c = conn.cursor()
+                    c.execute("SELECT * FROM email_servers WHERE id = ?", (server_id,))
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        server_config = dict(row)
+                        owner_id = uid
+                        break
+                except Exception:
+                    continue
+
+    if not server_config:
+        return {"success": False, "error": "Server not found"}
+
+    if not _try_acquire_fetch_lock(server_id):
+        return {"success": True, "fetched": 0, "status": "skipped", "message": "Download already in progress"}
+
+    try:
+        batch_size = server_config.get("max_emails_per_fetch", 50)
+        if batch_size is None or batch_size == -1:
+            batch_size = 999999
+
+        conn = get_user_db(owner_id)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT server_uid FROM emails WHERE user_id = ? AND server_id = ? AND server_uid != ''",
+            (owner_id, server_id),
+        )
+        known_uids = {r["server_uid"] for r in cursor.fetchall()}
+        conn.close()
+
+        protocol = server_config["incoming_protocol"].upper()
+        server_name = server_config.get("server_name", "")
+        total_fetched = 0
+
+        if protocol == "POP3":
+            result_emails = _download_all_pop3(server_config, batch_size, known_uids, server_id, server_name)
+            total_fetched = _store_emails(result_emails, owner_id, server_id, server_config)
+            _update_progress(server_id, total_fetched, total_fetched, "done", server_name)
+
+        elif protocol == "IMAP":
+            # Get all UIDs from the server to know the total
+            server_context = _connect_imap(server_config)
+            if server_context is None:
+                return {"success": False, "error": "IMAP connection failed"}
+            server, _login_ok = server_context
+            try:
+                server.select("INBOX")
+                _, data = server.uid("SEARCH", None, "ALL")
+                all_uids = data[0].split() if data[0] else []
+                all_uids = [u for u in all_uids if u.strip()]
+                # Filter known UIDs
+                if known_uids:
+                    known_bytes = {u.encode() if isinstance(u, str) else u for u in known_uids}
+                    new_uids = [u for u in all_uids if u not in known_bytes]
+                else:
+                    new_uids = list(all_uids)
+                total_all = len(new_uids)
+
+                if total_all == 0:
+                    _update_progress(server_id, 0, 0, "done", server_name)
+                    return {"success": True, "fetched": 0}
+
+                _update_progress(server_id, total_all, 0, "downloading", server_name)
+                local_known = set(known_uids)
+
+                for i in range(0, total_all, batch_size):
+                    batch_uids = new_uids[i:i + batch_size]
+                    batch_emails = _fetch_imap_uids(server, batch_uids, server_config)
+                    batch_stored = _store_emails(batch_emails, owner_id, server_id, server_config)
+                    total_fetched += batch_stored
+                    for em in batch_emails:
+                        if em.get("server_uid"):
+                            local_known.add(em["server_uid"])
+                    for j in range(len(batch_uids)):
+                        _update_progress(server_id, total_all, i + j + 1, "downloading", server_name)
+
+                # Handle delete_after_download for IMAP
+                if server_config.get("delete_after_download"):
+                    for uid in new_uids:
+                        try:
+                            server.uid("STORE", uid, "+FLAGS", "\\Deleted")
+                        except Exception:
+                            pass
+                    server.expunge()
+            finally:
+                try:
+                    server.close()
+                    server.logout()
+                except Exception:
+                    pass
+
+            _update_progress(server_id, total_all, total_all, "done", server_name)
+        else:
+            return {"success": False, "error": f"Unsupported protocol: {protocol}"}
+
+        # Update last fetch time
+        conn = get_user_db(owner_id)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE email_servers SET last_fetch_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), server_id),
+        )
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "fetched": total_fetched}
+    except Exception as e:
+        _update_progress(server_id, 0, 0, "error", server_config.get("server_name", ""))
+        return {"success": False, "error": str(e)}
+    finally:
+        _release_fetch_lock(server_id)
+
+
+def _connect_imap(server_config: dict) -> tuple | None:
+    """Connect and login to an IMAP server. Returns (server, True) or None."""
+    try:
+        if server_config["use_ssl"]:
+            server = imaplib.IMAP4_SSL(
+                server_config["incoming_server"],
+                server_config["incoming_port"] or 993,
+                timeout=30,
+            )
+        else:
+            server = imaplib.IMAP4(
+                server_config["incoming_server"],
+                server_config["incoming_port"] or 143,
+                timeout=30,
+            )
+        _send_imap_id(server)
+        server.login(server_config["username"], server_config["password"])
+        return (server, True)
+    except Exception as e:
+        return None
+
+
+def _fetch_imap_uids(server, uids: list, server_config: dict) -> list:
+    """Fetch specific UIDs from an already-connected IMAP server.
+
+    Returns list of email dicts.
+    """
+    emails_fetched = []
+    seen_msg_ids = set()
+    for uid in uids:
+        try:
+            _, msg_data = server.uid("FETCH", uid, "(RFC822)")
+            raw_email = None
+            for part in msg_data:
+                if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], bytes):
+                    raw_email = part[1]
+                    break
+            if raw_email is None:
+                continue
+
+            msg = email.message_from_bytes(raw_email)
+            server_uid = uid.decode() if isinstance(uid, bytes) else str(uid)
+            subject = _decode_mime_header(msg.get("Subject", ""))
+            sender_raw = msg.get("From", "")
+            sender_name, sender_addr = _extract_email_address(sender_raw)
+            recipients = _parse_addresses(msg.get("To", ""))
+            date_str = msg.get("Date", "")
+            message_id = (msg.get("Message-ID") or "").strip()
+
+            if message_id and message_id in seen_msg_ids:
+                continue
+            if message_id:
+                seen_msg_ids.add(message_id)
+
+            received_date = _parse_email_date(date_str)
+            body_text, body_html = _get_email_body(msg)
+
+            emails_fetched.append({
+                "message_id": message_id,
+                "server_uid": server_uid,
+                "sender": sender_addr or sender_raw,
+                "sender_name": sender_name or sender_addr,
+                "recipients": recipients,
+                "subject": subject,
+                "body_text": body_text,
+                "body_html": body_html,
+                "received_date": received_date.isoformat(),
+            })
+        except Exception:
+            continue
+    return emails_fetched
+
+
+def _download_all_pop3(server_config: dict, batch_size: int, known_uids: set, server_id: int, server_name: str) -> list:
+    """Download all new emails from a POP3 server, returning list of email dicts."""
+    all_emails = []
+    try:
+        if server_config["use_ssl"]:
+            server = poplib.POP3_SSL(
+                server_config["incoming_server"],
+                server_config["incoming_port"] or 995,
+                timeout=30,
+            )
+        else:
+            server = poplib.POP3(
+                server_config["incoming_server"],
+                server_config["incoming_port"] or 110,
+                timeout=30,
+            )
+
+        server.user(server_config["username"])
+        server.pass_(server_config["password"])
+
+        # Get UIDL mapping
+        num_messages = len(server.list()[1])
+        uidl_resp = server.uidl()
+        # uidl_resp[1] is list of b'1 uid123 ...' lines
+        seq_to_uid = {}
+        for line in uidl_resp[1]:
+            parts = line.decode().split()
+            if len(parts) >= 2:
+                seq_to_uid[int(parts[0])] = parts[1]
+
+        # Find new messages (from newest to oldest)
+        new_seqs = []
+        for seq in range(num_messages, 0, -1):
+            uid = seq_to_uid.get(seq, "")
+            if uid and uid not in known_uids:
+                new_seqs.append(seq)
+
+        total_new = len(new_seqs)
+        if total_new == 0:
+            server.quit()
+            return []
+
+        _update_progress(server_id, total_new, 0, "downloading", server_name)
+
+        # Process in batches
+        for i in range(0, total_new, batch_size):
+            batch_seqs = new_seqs[i:i + batch_size]
+            for j, seq in enumerate(batch_seqs):
+                try:
+                    uid = seq_to_uid.get(seq, "")
+                    raw_email = b"\n".join(server.retr(seq)[1])
+                    msg = email.message_from_bytes(raw_email)
+
+                    subject = _decode_mime_header(msg.get("Subject", ""))
+                    sender_raw = msg.get("From", "")
+                    sender_name, sender_addr = _extract_email_address(sender_raw)
+                    recipients = _parse_addresses(msg.get("To", ""))
+                    date_str = msg.get("Date", "")
+                    message_id = msg.get("Message-ID", "")
+                    received_date = _parse_email_date(date_str)
+                    body_text, body_html = _get_email_body(msg)
+
+                    all_emails.append({
+                        "message_id": message_id,
+                        "server_uid": uid,
+                        "sender": sender_addr or sender_raw,
+                        "sender_name": sender_name or sender_addr,
+                        "recipients": recipients,
+                        "subject": subject,
+                        "body_text": body_text,
+                        "body_html": body_html,
+                        "received_date": received_date.isoformat(),
+                    })
+                except Exception:
+                    continue
+
+                _update_progress(server_id, total_new, i + j + 1, "downloading", server_name)
+
+        if server_config.get("delete_after_download"):
+            for seq in new_seqs:
+                try:
+                    server.dele(seq)
+                except Exception:
+                    pass
+
+        server.quit()
+    except Exception as e:
+        raise Exception(f"POP3 download all failed: {e}")
+
+    return all_emails
 
 
 def test_server_connection(server_config: dict) -> dict:

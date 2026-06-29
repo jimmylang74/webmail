@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS email_servers (
     fetch_interval_minutes INTEGER DEFAULT 0,
     imap_idle_supported INTEGER DEFAULT 0,
     use_imap_idle INTEGER DEFAULT 0,
+    max_emails_per_fetch INTEGER DEFAULT 50,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -239,6 +240,12 @@ def init_user_db(user_id: int):
 
     try:
         cursor.execute("ALTER TABLE emails ADD COLUMN server_uid TEXT DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE email_servers ADD COLUMN max_emails_per_fetch INTEGER DEFAULT 50")
         conn.commit()
     except sqlite3.OperationalError:
         pass

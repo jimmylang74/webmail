@@ -40,7 +40,7 @@ from modules.email_classify import (
     auto_classify_senders,
     classify_unclassified_emails,
 )
-from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, test_server_connection, check_imap_capabilities
+from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, test_server_connection, check_imap_capabilities, download_all_emails
 from modules.email_send import save_draft, send_email
 from modules.forward import (
     create_forward_rule,
@@ -320,8 +320,8 @@ def api_add_server():
            (user_id, server_name, incoming_server, incoming_port, incoming_protocol,
             outgoing_server, outgoing_port, username, password,
             delete_after_download, use_ssl, fetch_interval_minutes, use_imap_idle,
-            imap_idle_supported)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            imap_idle_supported, max_emails_per_fetch)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session["user_id"],
             data["server_name"],
@@ -337,6 +337,7 @@ def api_add_server():
             data.get("fetch_interval_minutes", 0),
             use_imap_idle,
             imap_idle_supported,
+            data.get("max_emails_per_fetch", 50),
         ),
     )
     conn.commit()
@@ -360,7 +361,7 @@ def api_update_server(server_id):
            server_name=?, incoming_server=?, incoming_port=?, incoming_protocol=?,
            outgoing_server=?, outgoing_port=?, username=?, password=?,
            delete_after_download=?, use_ssl=?, fetch_interval_minutes=?, use_imap_idle=?,
-           imap_idle_supported=?
+           imap_idle_supported=?, max_emails_per_fetch=?
            WHERE id=? AND user_id=?""",
         (
             data.get("server_name", ""),
@@ -376,6 +377,7 @@ def api_update_server(server_id):
             data.get("fetch_interval_minutes", 0),
             use_imap_idle,
             imap_idle_supported,
+            data.get("max_emails_per_fetch", 50),
             server_id,
             session["user_id"],
         ),
@@ -427,6 +429,24 @@ def api_fetch_server(server_id):
     thread = threading.Thread(target=_fetch_and_fwd, daemon=True)
     thread.start()
     return jsonify({"success": True, "message": "Fetch started"})
+
+
+@app.route("/api/servers/<int:server_id>/download-all", methods=["POST"])
+@login_required
+def api_download_all_server(server_id):
+    user_id = session["user_id"]
+
+    def _download_and_fwd():
+        result = download_all_emails(server_id, user_id)
+        if result.get("success"):
+            classify_unclassified_emails(user_id)
+            auto_classify_senders(user_id)
+        elif not result.get("success"):
+            logging.error("Download all failed for server %d: %s", server_id, result.get("error"))
+
+    thread = threading.Thread(target=_download_and_fwd, daemon=True)
+    thread.start()
+    return jsonify({"success": True, "message": "Download all started"})
 
 
 @app.route("/api/servers/<int:server_id>/test", methods=["POST"])

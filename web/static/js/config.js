@@ -93,6 +93,7 @@ async function editServer(id) {
     document.getElementById('useSsl').value = srv.use_ssl ? '1' : '0';
     document.getElementById('deleteAfterDownload').checked = !!srv.delete_after_download;
     document.getElementById('fetchInterval').value = srv.fetch_interval_minutes || 0;
+    document.getElementById('maxEmailsPerFetch').value = srv.max_emails_per_fetch != null ? srv.max_emails_per_fetch : 50;
 
     const isImap = (srv.incoming_protocol || 'POP3').toUpperCase() === 'IMAP';
     const idleSupported = !!srv.imap_idle_supported;
@@ -124,6 +125,7 @@ async function saveServer(e) {
     use_ssl: document.getElementById('useSsl').value === '1',
     delete_after_download: document.getElementById('deleteAfterDownload').checked,
     fetch_interval_minutes: parseInt(document.getElementById('fetchInterval').value) || 0,
+    max_emails_per_fetch: parseInt(document.getElementById('maxEmailsPerFetch').value) || 50,
     use_imap_idle: document.getElementById('useImapIdle').checked,
   };
 
