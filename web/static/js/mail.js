@@ -1358,6 +1358,746 @@ async function changeMyPassword(e) {
   } catch (_) {}
 })();
 
+// ===== Contacts Panel =====
+let contactPanelVisible = false;
+
+// Load contact panel state from localStorage
+try {
+  contactPanelVisible = localStorage.getItem('contact_panel_visible') === 'true';
+} catch (_) {}
+
+async function loadContacts() {
+  try {
+    const [contactsData, groupsData] = await Promise.all([
+      api('/api/contacts'),
+      api('/api/contact-groups'),
+    ]);
+    renderContactTree(contactsData.contacts || [], groupsData.contact_groups || []);
+  } catch (err) {
+    console.error('Failed to load contacts:', err);
+  }
+}
+
+function renderContactTree(contacts, groups) {
+  const container = document.getElementById('contactTree');
+  container.innerHTML = '';
+
+  // Favorites section
+  const favContacts = contacts.filter(c => c.is_favorite);
+  if (favContacts.length > 0) {
+    const section = document.createElement('div');
+    const header = document.createElement('div');
+    header.className = 'contact-tree-group-header';
+    header.textContent = __('Favorites');
+    section.appendChild(header);
+
+    favContacts.forEach(c => {
+      section.appendChild(createContactTreeItem(c, true));
+    });
+    container.appendChild(section);
+  }
+
+  // Grouped contacts
+  groups.forEach(g => {
+    const groupContacts = contacts.filter(c => c.group_ids && c.group_ids.includes(g.id));
+    if (groupContacts.length === 0) return;
+
+    const groupWrapper = document.createElement('div');
+    const groupHeader = document.createElement('div');
+    groupHeader.className = 'contact-tree-item';
+    groupHeader.style.fontWeight = '600';
+
+    const toggle = document.createElement('span');
+    toggle.className = 'contact-tree-toggle collapsed';
+    toggle.innerHTML = '&#9660;';
+    groupHeader.appendChild(toggle);
+
+    const icon = document.createElement('span');
+    icon.className = 'contact-tree-icon';
+    icon.innerHTML = '&#128193;';
+    groupHeader.appendChild(icon);
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'contact-tree-name';
+    nameSpan.textContent = g.name;
+    groupHeader.appendChild(nameSpan);
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'contact-tree-count';
+    countSpan.textContent = groupContacts.length;
+    groupHeader.appendChild(countSpan);
+
+    groupHeader.addEventListener('click', (e) => {
+      const children = groupWrapper.querySelector('.contact-tree-children');
+      const toggler = groupHeader.querySelector('.contact-tree-toggle');
+      if (children) {
+        children.classList.toggle('collapsed');
+        if (toggler) toggler.classList.toggle('collapsed');
+      }
+    });
+
+    groupHeader.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showContactContextMenu(e, {type: 'group', id: g.id, name: g.name});
+    });
+
+    groupWrapper.appendChild(groupHeader);
+
+    const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'contact-tree-children collapsed';
+    groupContacts.forEach(c => {
+      childrenContainer.appendChild(createContactTreeItem(c, false));
+    });
+    groupWrapper.appendChild(childrenContainer);
+    container.appendChild(groupWrapper);
+  });
+
+  // Ungrouped contacts (not favorite, not in any group)
+  const ungrouped = contacts.filter(c => !c.is_favorite && (!c.group_ids || c.group_ids.length === 0));
+  if (ungrouped.length > 0) {
+    const section = document.createElement('div');
+    const header = document.createElement('div');
+    header.className = 'contact-tree-group-header';
+    header.textContent = __('Other Contacts');
+    section.appendChild(header);
+
+    ungrouped.forEach(c => {
+      section.appendChild(createContactTreeItem(c, false));
+    });
+    container.appendChild(section);
+  }
+
+  // Empty state
+  if (contacts.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'contact-tree-group-header';
+    empty.textContent = __('No contacts yet');
+    empty.style.padding = '20px 12px';
+    empty.style.textAlign = 'center';
+    empty.style.opacity = '0.5';
+    container.appendChild(empty);
+  }
+}
+
+function createContactTreeItem(contact, isFav) {
+  const item = document.createElement('div');
+  item.className = 'contact-tree-item';
+  if (isFav) item.classList.add('contact-fav');
+
+  const icon = document.createElement('span');
+  icon.className = 'contact-tree-icon';
+  if (isFav) {
+    icon.innerHTML = '&#11088;';
+  } else {
+    icon.innerHTML = '&#128100;';
+  }
+  item.appendChild(icon);
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'contact-tree-name';
+  nameSpan.textContent = contact.name;
+  nameSpan.title = contact.email;
+  item.appendChild(nameSpan);
+
+  item.addEventListener('click', () => {
+    document.querySelectorAll('#contactTree .contact-tree-item.selected').forEach(el => el.classList.remove('selected'));
+    item.classList.add('selected');
+  });
+
+  item.addEventListener('dblclick', () => {
+    showCompose(null);
+    const toField = document.getElementById('composeTo');
+    if (toField) {
+      toField.value = contact.email;
+    }
+  });
+
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showContactContextMenu(e, {type: 'contact', id: contact.id, name: contact.name, email: contact.email});
+  });
+
+  return item;
+}
+
+function toggleContactPanel() {
+  contactPanelVisible = !contactPanelVisible;
+  const panel = document.getElementById('contactPanel');
+  const splitter = document.getElementById('splitterVC');
+  if (contactPanelVisible) {
+    panel.classList.remove('collapsed');
+    splitter.style.display = 'block';
+    loadContacts();
+  } else {
+    panel.classList.add('collapsed');
+    splitter.style.display = 'none';
+  }
+  try {
+    localStorage.setItem('contact_panel_visible', contactPanelVisible);
+  } catch (_) {}
+}
+
+// ===== Contact Panel Splitter =====
+(function initSplitterVC() {
+  const splitter = document.getElementById('splitterVC');
+  const panel = document.getElementById('contactPanel');
+  let dragging = false;
+
+  splitter.addEventListener('mousedown', (e) => {
+    dragging = true;
+    splitter.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const sidebar = document.getElementById('sidebar');
+    const sidebarW = sidebar.offsetWidth;
+    let w = e.clientX - sidebarW;
+    w = Math.max(120, Math.min(350, w));
+    panel.style.width = w + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+// Initialize contact panel visibility on page load
+(function initContactPanel() {
+  if (contactPanelVisible) {
+    const panel = document.getElementById('contactPanel');
+    const splitter = document.getElementById('splitterVC');
+    if (panel) panel.classList.remove('collapsed');
+    if (splitter) splitter.style.display = 'block';
+    loadContacts();
+  }
+  // Empty-space right-click on contact panel
+  const panel = document.getElementById('contactPanel');
+  if (panel) {
+    panel.addEventListener('contextmenu', (e) => {
+      // Only trigger if clicking the panel background or #contactTree empty area
+      if (e.target === panel || e.target === document.getElementById('contactTree') || e.target.closest('.contact-panel-tree')) {
+        e.preventDefault();
+        showContactContextMenu(e, null);
+      }
+    });
+  }
+})();
+
+// ===== Contact Context Menu =====
+let contactCtxTarget = null;
+
+function showContactContextMenu(e, target) {
+  hideContextMenu();
+  hideContactContextMenu();
+  contactCtxTarget = target;
+  const menu = document.getElementById('contactCtxMenu');
+  if (!menu) return;
+  const addGroup = document.getElementById('ctxCtcAddGroup');
+  const addContact = document.getElementById('ctxCtcAddContact');
+  const groupRename = document.getElementById('ctxCtcGroupRename');
+  const groupDelete = document.getElementById('ctxCtcGroupDelete');
+  const sendEmail = document.getElementById('ctxCtcSendEmail');
+  const editContactEl = document.getElementById('ctxCtcEditContact');
+  const deleteContactEl = document.getElementById('ctxCtcDeleteContact');
+  const div1 = document.getElementById('ctxCtcDiv1');
+  const div2 = document.getElementById('ctxCtcDiv2');
+  [addGroup, addContact, groupRename, groupDelete, sendEmail, editContactEl, deleteContactEl, div1, div2].forEach(el => { if (el) el.style.display = 'none'; });
+  if (!target) {
+    if (addGroup) addGroup.style.display = 'flex';
+    if (addContact) addContact.style.display = 'flex';
+  } else if (target.type === 'group') {
+    if (groupRename) groupRename.style.display = 'flex';
+    if (groupDelete) groupDelete.style.display = 'flex';
+  } else if (target.type === 'contact') {
+    if (sendEmail) sendEmail.style.display = 'flex';
+    if (editContactEl) editContactEl.style.display = 'flex';
+    if (deleteContactEl) deleteContactEl.style.display = 'flex';
+    if (div2) div2.style.display = 'block';
+  }
+  menu.style.left = e.clientX + 'px';
+  menu.style.top = e.clientY + 'px';
+  menu.classList.add('show');
+}
+
+function hideContactContextMenu() {
+  const menu = document.getElementById('contactCtxMenu');
+  if (menu) menu.classList.remove('show');
+  contactCtxTarget = null;
+}
+
+function ctcCtxAddGroup() {
+  hideContactContextMenu();
+  contactsAddGroup();
+}
+function ctcCtxAddContact() {
+  hideContactContextMenu();
+  contactsAddContact();
+}
+function ctcCtxGroupRename() {
+  const target = contactCtxTarget;
+  hideContactContextMenu();
+  if (!target) return;
+  document.getElementById('contactGroupEditTitle').textContent = __('Edit Group');
+  document.getElementById('cgeName').value = target.name;
+  document.getElementById('contactGroupEditForm').dataset.groupId = target.id;
+  document.getElementById('cgeDeleteBtn').style.display = '';
+  document.getElementById('contactGroupEditModal').style.display = 'flex';
+}
+async function ctcCtxGroupDelete() {
+  const target = contactCtxTarget;
+  hideContactContextMenu();
+  if (!target) return;
+  if (!(await showDialog({ title: __('Delete Group'), message: __('Delete this group?') }))) return;
+  try {
+    await api('/api/contact-groups/' + target.id, { method: 'DELETE' });
+    loadContacts();
+    if (document.getElementById('manageContactsModal').style.display === 'flex') refreshContactsMgr();
+  } catch (err) {
+    alert(__('Error: {0}', err.message));
+  }
+}
+function ctcCtxSendEmail() {
+  const target = contactCtxTarget;
+  hideContactContextMenu();
+  if (!target) return;
+  showCompose(null);
+  const toField = document.getElementById('composeTo');
+  if (toField) toField.value = target.email;
+}
+function ctcCtxEditContact() {
+  const target = contactCtxTarget;
+  hideContactContextMenu();
+  if (!target) return;
+  showManageContacts();
+  setTimeout(() => contactsEditContact(target.id), 300);
+}
+async function ctcCtxDeleteContact() {
+  const target = contactCtxTarget;
+  hideContactContextMenu();
+  if (!target) return;
+  if (!(await showDialog({ title: __('Delete Contact'), message: __('Delete this contact?') }))) return;
+  try {
+    await api('/api/contacts/' + target.id, { method: 'DELETE' });
+    loadContacts();
+    if (document.getElementById('manageContactsModal').style.display === 'flex') refreshContactsMgr();
+  } catch (err) {
+    alert(__('Error: {0}', err.message));
+  }
+}
+
+// Close contact context menu on click elsewhere
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#contactCtxMenu')) {
+    hideContactContextMenu();
+  }
+});
+
+// ===== Manage Contacts Modal =====
+let contactsDataCache = { contacts: [], groups: [] };
+let selectedGroupId = null;
+
+async function showManageContacts() {
+  document.getElementById('manageContactsModal').style.display = 'flex';
+  await refreshContactsMgr();
+}
+
+function closeManageContacts() {
+  document.getElementById('manageContactsModal').style.display = 'none';
+  loadContacts(); // Refresh the contact panel
+}
+
+async function refreshContactsMgr() {
+  try {
+    const [contactsData, groupsData] = await Promise.all([
+      api('/api/contacts'),
+      api('/api/contact-groups'),
+    ]);
+    contactsDataCache = {
+      contacts: contactsData.contacts || [],
+      groups: groupsData.contact_groups || [],
+    };
+    renderContactGroups();
+    renderContactList();
+  } catch (err) {
+    console.error('Failed to load contacts data:', err);
+  }
+}
+
+function renderContactGroups() {
+  const list = document.getElementById('contactsGroupList');
+  list.innerHTML = '';
+
+  // "All" item
+  const allItem = document.createElement('div');
+  allItem.className = 'contacts-mgr-group-item' + (selectedGroupId === null ? ' active' : '');
+  allItem.textContent = __('All Contacts');
+  allItem.addEventListener('click', () => {
+    selectedGroupId = null;
+    renderContactGroups();
+    renderContactList();
+  });
+  list.appendChild(allItem);
+
+  contactsDataCache.groups.forEach(g => {
+    const item = document.createElement('div');
+    item.className = 'contacts-mgr-group-item' + (selectedGroupId === g.id ? ' active' : '');
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = g.name;
+    item.appendChild(nameSpan);
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'group-count';
+    countSpan.textContent = g.contact_count || 0;
+    item.appendChild(countSpan);
+
+    item.addEventListener('click', () => {
+      selectedGroupId = g.id;
+      renderContactGroups();
+      renderContactList();
+    });
+
+    item.addEventListener('dblclick', () => {
+      document.getElementById('contactGroupEditTitle').textContent = __('Edit Group');
+      document.getElementById('cgeName').value = g.name;
+      document.getElementById('contactGroupEditForm').dataset.groupId = g.id;
+      document.getElementById('cgeDeleteBtn').style.display = '';
+      document.getElementById('contactGroupEditModal').style.display = 'flex';
+    });
+
+    list.appendChild(item);
+  });
+}
+
+function renderContactList() {
+  const container = document.getElementById('contactsMgrList');
+  container.innerHTML = '';
+
+  let contacts = contactsDataCache.contacts;
+  if (selectedGroupId !== null) {
+    contacts = contacts.filter(c => (c.group_ids && c.group_ids.includes(selectedGroupId)) || c.contact_group_id === selectedGroupId);
+  }
+
+  if (contacts.length === 0) {
+    container.innerHTML = '<div class="contacts-mgr-group-header" style="padding:20px;text-align:center;opacity:0.5;">' + __('No contacts') + '</div>';
+    return;
+  }
+
+  contacts.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'contacts-mgr-contact';
+
+    if (c.is_favorite) {
+      const star = document.createElement('span');
+      star.className = 'contact-fav-star';
+      star.textContent = '\u2605';
+      el.appendChild(star);
+    }
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'contact-name';
+    nameEl.textContent = c.name;
+    el.appendChild(nameEl);
+
+    const emailEl = document.createElement('span');
+    emailEl.className = 'contact-email';
+    emailEl.textContent = '<' + c.email + '>';
+    el.appendChild(emailEl);
+
+    // Show group badges (may be multiple)
+    const gids = c.group_ids || [];
+    if (c.contact_group_id && !gids.includes(c.contact_group_id)) gids.push(c.contact_group_id);
+    const groupNames = contactsDataCache.groups.filter(g => gids.includes(g.id)).map(g => g.name);
+    groupNames.forEach(gname => {
+      const badge = document.createElement('span');
+      badge.className = 'contact-group-badge';
+      badge.textContent = gname;
+      el.appendChild(badge);
+    });
+
+    el.addEventListener('click', () => contactsEditContact(c.id));
+    container.appendChild(el);
+  });
+
+  document.getElementById('contactsMgrStatus').textContent = contacts.length + ' ' + __('contacts');
+}
+
+async function contactsAddContact() {
+  await loadContactEditFormData();
+  document.getElementById('contactEditTitle').textContent = __('Add Contact');
+  document.getElementById('ceName').value = '';
+  document.getElementById('ceEmail').value = '';
+  document.getElementById('cePhone').value = '';
+  document.getElementById('ceServer').value = '';
+  document.getElementById('ceFavorite').checked = false;
+  document.getElementById('ceNotes').value = '';
+  document.getElementById('ceMessage').textContent = '';
+  document.getElementById('ceDeleteBtn').style.display = 'none';
+  delete document.getElementById('contactEditForm').dataset.contactId;
+  // Uncheck all group checkboxes
+  document.querySelectorAll('#ceGroups input[type="checkbox"]').forEach(cb => cb.checked = false);
+  document.querySelectorAll('#ceGroups label').forEach(lb => lb.classList.remove('checked'));
+  document.getElementById('contactEditModal').style.display = 'flex';
+}
+
+async function contactsEditContact(contactId) {
+  await loadContactEditFormData();
+  const contact = contactsDataCache.contacts.find(c => c.id === contactId);
+  if (!contact) return;
+
+  document.getElementById('contactEditTitle').textContent = __('Edit Contact');
+  document.getElementById('ceName').value = contact.name || '';
+  document.getElementById('ceEmail').value = contact.email || '';
+  document.getElementById('cePhone').value = contact.phone || '';
+  document.getElementById('ceServer').value = contact.default_server_id || '';
+  document.getElementById('ceFavorite').checked = !!contact.is_favorite;
+  document.getElementById('ceNotes').value = contact.notes || '';
+  document.getElementById('ceMessage').textContent = '';
+  document.getElementById('ceDeleteBtn').style.display = '';
+  document.getElementById('contactEditForm').dataset.contactId = contactId;
+
+  // Check the contact's group checkboxes
+  const gids = contact.group_ids || [];
+  if (contact.contact_group_id && !gids.includes(contact.contact_group_id)) gids.push(contact.contact_group_id);
+  document.querySelectorAll('#ceGroups input[type="checkbox"]').forEach(cb => {
+    cb.checked = gids.includes(parseInt(cb.value));
+    cb.closest('label').classList.toggle('checked', cb.checked);
+  });
+
+  document.getElementById('contactEditModal').style.display = 'flex';
+}
+
+async function loadContactEditFormData() {
+  try {
+    const [groupsData, serversData] = await Promise.all([
+      api('/api/contact-groups'),
+      api('/api/servers'),
+    ]);
+    // Render group checkboxes for multi-select
+    const container = document.getElementById('ceGroups');
+    container.innerHTML = '';
+    (groupsData.contact_groups || []).forEach(g => {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = g.id;
+      cb.addEventListener('change', () => {
+        label.classList.toggle('checked', cb.checked);
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + escHtml(g.name)));
+      container.appendChild(label);
+    });
+
+    const serverSelect = document.getElementById('ceServer');
+    serverSelect.innerHTML = '<option value="">(' + __('None') + ')</option>';
+    (serversData.servers || []).forEach(s => {
+      serverSelect.innerHTML += '<option value="' + s.id + '">' + escHtml(s.server_name) + '</option>';
+    });
+  } catch (err) {
+    console.error('Failed to load form data:', err);
+  }
+}
+
+function closeContactEdit() {
+  document.getElementById('contactEditModal').style.display = 'none';
+}
+
+async function contactsSaveContact(e) {
+  e.preventDefault();
+  const contactId = document.getElementById('contactEditForm').dataset.contactId;
+  const name = document.getElementById('ceName').value.trim();
+  const email = document.getElementById('ceEmail').value.trim();
+  const phone = document.getElementById('cePhone').value.trim();
+  const defaultServerId = document.getElementById('ceServer').value;
+  const isFavorite = document.getElementById('ceFavorite').checked ? 1 : 0;
+  const notes = document.getElementById('ceNotes').value.trim();
+  const msgDiv = document.getElementById('ceMessage');
+
+  // Gather checked group IDs
+  const groupIds = [];
+  document.querySelectorAll('#ceGroups input[type="checkbox"]:checked').forEach(cb => {
+    groupIds.push(parseInt(cb.value));
+  });
+
+  if (!name || !email) {
+    msgDiv.textContent = __('Name and email are required');
+    msgDiv.className = 'form-message form-error';
+    return;
+  }
+
+  try {
+    const body = {
+      name, email, phone,
+      contact_group_id: groupIds.length > 0 ? groupIds[0] : null,
+      group_ids: groupIds,
+      default_server_id: defaultServerId || null,
+      is_favorite: isFavorite,
+      notes,
+    };
+    if (contactId) {
+      await api('/api/contacts/' + contactId, {
+        method: 'PUT',
+        body,
+      });
+    } else {
+      await api('/api/contacts', {
+        method: 'POST',
+        body,
+      });
+    }
+    msgDiv.textContent = __('Saved!');
+    msgDiv.className = 'form-message form-success';
+    closeContactEdit();
+    await refreshContactsMgr();
+    loadContacts();
+  } catch (err) {
+    msgDiv.textContent = __('Error: {0}', err.message);
+    msgDiv.className = 'form-message form-error';
+  }
+}
+
+async function contactsDeleteContact() {
+  const contactId = document.getElementById('contactEditForm').dataset.contactId;
+  if (!contactId) return;
+  if (!(await showDialog({ title: __('Delete Contact'), message: __('Delete this contact?') }))) return;
+
+  try {
+    await api('/api/contacts/' + contactId, { method: 'DELETE' });
+    closeContactEdit();
+    await refreshContactsMgr();
+    loadContacts();
+  } catch (err) {
+    document.getElementById('ceMessage').textContent = __('Error: {0}', err.message);
+    document.getElementById('ceMessage').className = 'form-message form-error';
+  }
+}
+
+// Contact group management
+function contactsAddGroup() {
+  document.getElementById('contactGroupEditTitle').textContent = __('Add Group');
+  document.getElementById('cgeName').value = '';
+  document.getElementById('cgeMessage').textContent = '';
+  document.getElementById('cgeDeleteBtn').style.display = 'none';
+  delete document.getElementById('contactGroupEditForm').dataset.groupId;
+  document.getElementById('contactGroupEditModal').style.display = 'flex';
+}
+
+function closeContactGroupEdit() {
+  document.getElementById('contactGroupEditModal').style.display = 'none';
+}
+
+async function contactsSaveGroup(e) {
+  e.preventDefault();
+  const groupId = document.getElementById('contactGroupEditForm').dataset.groupId;
+  const name = document.getElementById('cgeName').value.trim();
+  const msgDiv = document.getElementById('cgeMessage');
+
+  if (!name) {
+    msgDiv.textContent = __('Group name is required');
+    msgDiv.className = 'form-message form-error';
+    return;
+  }
+
+  try {
+    if (groupId) {
+      await api('/api/contact-groups/' + groupId, {
+        method: 'PUT',
+        body: { name },
+      });
+    } else {
+      await api('/api/contact-groups', {
+        method: 'POST',
+        body: { name },
+      });
+    }
+    msgDiv.textContent = __('Saved!');
+    msgDiv.className = 'form-message form-success';
+    closeContactGroupEdit();
+    await refreshContactsMgr();
+    loadContacts();
+  } catch (err) {
+    msgDiv.textContent = __('Error: {0}', err.message);
+    msgDiv.className = 'form-message form-error';
+  }
+}
+
+async function contactsDeleteGroup() {
+  const groupId = document.getElementById('contactGroupEditForm').dataset.groupId;
+  if (!groupId) return;
+  if (!(await showDialog({ title: __('Delete Group'), message: __('Delete this group? Contacts will be ungrouped.') }))) return;
+
+  try {
+    await api('/api/contact-groups/' + groupId, { method: 'DELETE' });
+    closeContactGroupEdit();
+    await refreshContactsMgr();
+    loadContacts();
+  } catch (err) {
+    document.getElementById('cgeMessage').textContent = __('Error: {0}', err.message);
+    document.getElementById('cgeMessage').className = 'form-message form-error';
+  }
+}
+
+// ===== Context Menu: Add Sender to Contacts =====
+async function contextAddSenderToContact() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target) return;
+
+  let senderName = '';
+  let senderEmail = '';
+
+  try {
+    if (target.type === 'email' && target.id) {
+      const data = await api('/api/emails/' + target.id);
+      const email = data.email;
+      if (email) {
+        senderName = email.sender_name || '';
+        senderEmail = email.sender || '';
+      }
+    }
+  } catch (_) {}
+
+  if (!senderEmail) {
+    alert(__('Could not determine sender email'));
+    return;
+  }
+
+  try {
+    const result = await api('/api/contacts/add-from-email', {
+      method: 'POST',
+      body: { name: senderName || senderEmail, email: senderEmail },
+    });
+    if (result.already_exists) {
+      alert(__('Contact already exists'));
+    } else {
+      alert(__('Contact added!'));
+    }
+    loadContacts();
+  } catch (err) {
+    alert(__('Failed to add contact: {0}', err.message));
+  }
+}
+
+// Context menu visibility for contact-related items
+const origShowContextMenu = showContextMenu;
+showContextMenu = function(x, y) {
+  origShowContextMenu(x, y);
+  const addContactItem = document.getElementById('ctxAddContact');
+  if (addContactItem) {
+    addContactItem.style.display = (contextMenuTarget && contextMenuTarget.type === 'email') ? 'flex' : 'none';
+  }
+};
+
 // ===== Helper =====
 function escHtml(str) {
   if (!str) return '';

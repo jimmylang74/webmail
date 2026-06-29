@@ -16,6 +16,9 @@
           <input type="checkbox" id="groupByServer" onchange="toggleGroupByServer(this.checked)">
           {{ T('Group by Server') }}
         </label>
+        <span class="toolbar-sep"></span>
+        <button class="btn btn-sm btn-outline" onclick="toggleContactPanel()" id="toggleContactsBtn" title="{{ T('Show/Hide Contacts') }}">&#128101; {{ T('Contacts') }}</button>
+        <button class="btn btn-sm btn-outline" onclick="showManageContacts()" title="{{ T('Manage Contacts') }}">&#9998; {{ T('Manage') }}</button>
         <span id="fetchStatus" class="fetch-status"></span>
       </div>
       <div class="toolbar-center">
@@ -50,8 +53,22 @@
         </div>
       </nav>
 
-      <!-- Vertical Splitter -->
+      <!-- Sidebar / Contact Splitter -->
       <div class="splitter splitter-v" id="splitterV"></div>
+
+      <!-- Contact Panel (collapsible) -->
+      <div class="contact-panel" id="contactPanel">
+        <div class="contact-panel-header">
+          <span class="contact-panel-title">{{ T('Contacts') }}</span>
+          <button class="contact-panel-close" onclick="toggleContactPanel()" title="{{ T('Close') }}">&times;</button>
+        </div>
+        <div class="contact-panel-tree" id="contactTree">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Contact / Content Splitter -->
+      <div class="splitter splitter-v" id="splitterVC"></div>
 
       <!-- Right: Content Area -->
       <div class="content-area" id="contentArea">
@@ -137,6 +154,10 @@
           <span class="ctx-icon">&#9998;</span>
           <span>{{ T('Edit Name') }}</span>
         </div>
+        <div class="context-menu-item" id="ctxAddContact" onclick="contextAddSenderToContact()">
+          <span class="ctx-icon">&#128101;</span>
+          <span>{{ T('Add Sender to Contacts') }}</span>
+        </div>
         <div class="context-menu-divider" id="ctxDivider1"></div>
         <div class="context-menu-section" id="ctxMoveSection">
           <div class="context-menu-item context-menu-parent" id="ctxMoveTrigger">
@@ -154,6 +175,40 @@
           <span>{{ T('Delete All Emails in Group') }}</span>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Contact Context Menu -->
+  <div class="context-menu" id="contactCtxMenu">
+    <div class="context-menu-item" id="ctxCtcAddGroup" onclick="ctcCtxAddGroup()">
+      <span class="ctx-icon">&#128193;</span>
+      <span>{{ T('Add Group') }}</span>
+    </div>
+    <div class="context-menu-item" id="ctxCtcAddContact" onclick="ctcCtxAddContact()">
+      <span class="ctx-icon">&#128101;</span>
+      <span>{{ T('Add Contact') }}</span>
+    </div>
+    <div class="context-menu-divider" id="ctxCtcDiv1"></div>
+    <div class="context-menu-item" id="ctxCtcGroupRename" onclick="ctcCtxGroupRename()">
+      <span class="ctx-icon">&#9998;</span>
+      <span>{{ T('Rename') }}</span>
+    </div>
+    <div class="context-menu-item" id="ctxCtcGroupDelete" onclick="ctcCtxGroupDelete()">
+      <span class="ctx-icon">&#128465;</span>
+      <span>{{ T('Delete') }}</span>
+    </div>
+    <div class="context-menu-divider" id="ctxCtcDiv2"></div>
+    <div class="context-menu-item" id="ctxCtcSendEmail" onclick="ctcCtxSendEmail()">
+      <span class="ctx-icon">&#9993;</span>
+      <span>{{ T('Send Email') }}</span>
+    </div>
+    <div class="context-menu-item" id="ctxCtcEditContact" onclick="ctcCtxEditContact()">
+      <span class="ctx-icon">&#9998;</span>
+      <span>{{ T('Edit Contact') }}</span>
+    </div>
+    <div class="context-menu-item" id="ctxCtcDeleteContact" onclick="ctcCtxDeleteContact()">
+      <span class="ctx-icon">&#128465;</span>
+      <span>{{ T('Delete Contact') }}</span>
     </div>
   </div>
 
@@ -179,6 +234,114 @@
         <div class="modal-footer">
           <button type="button" class="btn" onclick="closeChangePassword()">{{ T('Cancel') }}</button>
           <button type="submit" class="btn btn-primary">{{ T('Update Password') }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Manage Contacts Modal -->
+  <div id="manageContactsModal" class="modal" style="display:none;">
+    <div class="modal-content modal-lg">
+      <div class="modal-header">
+        <h3>{{ T('Manage Contacts') }}</h3>
+        <button class="modal-close" onclick="closeManageContacts()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="contacts-mgr-toolbar">
+          <button class="btn btn-sm btn-primary" onclick="contactsAddContact()">+ {{ T('Add Contact') }}</button>
+          <button class="btn btn-sm btn-outline" onclick="contactsAddGroup()">+ {{ T('Add Group') }}</button>
+          <span class="contacts-mgr-status" id="contactsMgrStatus"></span>
+        </div>
+        <div class="contacts-mgr-layout">
+          <div class="contacts-mgr-groups" id="contactsMgrGroups">
+            <div class="contacts-mgr-groups-header">{{ T('Groups') }}</div>
+            <div class="contacts-mgr-groups-list" id="contactsGroupList">
+              <!-- Rendered by JS -->
+            </div>
+          </div>
+          <div class="contacts-mgr-list" id="contactsMgrList">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" onclick="closeManageContacts()">{{ T('Close') }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Contact Edit Modal -->
+  <div id="contactEditModal" class="modal" style="display:none;">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3 id="contactEditTitle">{{ T('Add Contact') }}</h3>
+        <button class="modal-close" onclick="closeContactEdit()">&times;</button>
+      </div>
+      <form id="contactEditForm" onsubmit="contactsSaveContact(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="ceName">{{ T('Name') }}</label>
+            <input type="text" id="ceName" required>
+          </div>
+          <div class="form-group">
+            <label for="ceEmail">{{ T('Email') }}</label>
+            <input type="email" id="ceEmail" required>
+          </div>
+          <div class="form-group">
+            <label for="cePhone">{{ T('Phone') }}</label>
+            <input type="text" id="cePhone">
+          </div>
+          <div class="form-group">
+            <label>{{ T('Groups') }}</label>
+            <div class="contact-group-checkboxes" id="ceGroups">
+              <!-- Rendered by JS -->
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="ceServer">{{ T('Default Email Server') }}</label>
+            <select id="ceServer">
+              <option value="">{{ T('(None)') }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="ceFavorite"> {{ T('Favorite') }}
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="ceNotes">{{ T('Notes') }}</label>
+            <textarea id="ceNotes" rows="3"></textarea>
+          </div>
+          <div id="ceMessage" class="form-message"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-danger" id="ceDeleteBtn" onclick="contactsDeleteContact()" style="margin-right:auto;display:none;">{{ T('Delete') }}</button>
+          <button type="button" class="btn" onclick="closeContactEdit()">{{ T('Cancel') }}</button>
+          <button type="submit" class="btn btn-primary">{{ T('Save') }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Contact Group Edit Modal -->
+  <div id="contactGroupEditModal" class="modal" style="display:none;">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3 id="contactGroupEditTitle">{{ T('Edit Group') }}</h3>
+        <button class="modal-close" onclick="closeContactGroupEdit()">&times;</button>
+      </div>
+      <form id="contactGroupEditForm" onsubmit="contactsSaveGroup(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="cgeName">{{ T('Group Name') }}</label>
+            <input type="text" id="cgeName" required>
+          </div>
+          <div id="cgeMessage" class="form-message"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-danger" id="cgeDeleteBtn" onclick="contactsDeleteGroup()" style="margin-right:auto;">{{ T('Delete Group') }}</button>
+          <button type="button" class="btn" onclick="closeContactGroupEdit()">{{ T('Cancel') }}</button>
+          <button type="submit" class="btn btn-primary">{{ T('Save') }}</button>
         </div>
       </form>
     </div>

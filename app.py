@@ -404,6 +404,10 @@ def api_delete_server(server_id):
         (user_id,),
     )
     cursor.execute(
+        "UPDATE contacts SET default_server_id=NULL WHERE default_server_id=? AND user_id=?",
+        (server_id, user_id),
+    )
+    cursor.execute(
         "DELETE FROM email_servers WHERE id=? AND user_id=?",
         (server_id, user_id),
     )
@@ -1478,6 +1482,282 @@ def api_get_group_by_server():
 def api_toggle_group_by_server():
     session["group_by_server"] = not session.get("group_by_server", False)
     return jsonify({"group_by_server": session["group_by_server"]})
+
+
+# ---------------------------------------------------------------------------
+# Contacts API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/contacts", methods=["GET"])
+@login_required
+def api_get_contacts():
+    """List contacts with their group info (many-to-many)."""
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT c.*, cg.name as group_name "
+        "FROM contacts c "
+        "LEFT JOIN contact_groups cg ON c.contact_group_id = cg.id "
+        "WHERE c.user_id=? ORDER BY c.is_favorite DESC, c.name ASC",
+        (user_id,),
+    )
+    contacts = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute(
+        "SELECT cgm.contact_id, cgm.contact_group_id FROM contact_group_members cgm "
+        "JOIN contacts c ON cgm.contact_id = c.id WHERE c.user_id=?",
+        (user_id,),
+    )
+    group_members = {}
+    for row in cursor.fetchall():
+        cid = row["contact_id"]
+        gid = row["contact_group_id"]
+        group_members.setdefault(cid, []).append(gid)
+
+    for c in contacts:
+        c["group_ids"] = group_members.get(c["id"], [])
+
+    conn.close()
+    return jsonify({"contacts": contacts})
+
+
+@app.route("/api/contacts", methods=["POST"])
+@login_required
+@json_body
+def api_add_contact():
+    """Add a new contact (supports many-to-many groups via group_ids)."""
+    data = request.get_json()
+    user_id = session["user_id"]
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip()
+    if not name or not email:
+        return jsonify({"error": "Name and email are required"}), 400
+
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO contacts (user_id, name, email, phone, contact_group_id, is_favorite, default_server_id, notes) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            user_id,
+            name,
+            email,
+            data.get("phone", ""),
+            data.get("contact_group_id"),
+            1 if data.get("is_favorite") else 0,
+            data.get("default_server_id"),
+            data.get("notes", ""),
+        ),
+    )
+    contact_id = cursor.lastrowid
+
+    # Insert many-to-many group memberships
+    group_ids = data.get("group_ids") or []
+    if data.get("contact_group_id") and data["contact_group_id"] not in group_ids:
+        group_ids.append(data["contact_group_id"])
+    for gid in group_ids:
+        cursor.execute(
+            "INSERT OR IGNORE INTO contact_group_members (contact_id, contact_group_id) VALUES (?, ?)",
+            (contact_id, gid),
+        )
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "id": contact_id})
+
+
+@app.route("/api/contacts/add-from-email", methods=["POST"])
+@login_required
+@json_body
+def api_add_contact_from_email():
+    """Add a sender as a new contact from email address."""
+    data = request.get_json()
+    user_id = session["user_id"]
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip()
+    if not email:
+        return jsonify({"error": "Email address is required"}), 400
+    if not name:
+        name = email
+
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM contacts WHERE user_id=? AND email=?",
+        (user_id, email),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"success": True, "id": existing["id"], "already_exists": True})
+
+    cursor.execute(
+        "INSERT INTO contacts (user_id, name, email) VALUES (?, ?, ?)",
+        (user_id, name, email),
+    )
+    conn.commit()
+    contact_id = cursor.lastrowid
+    conn.close()
+    return jsonify({"success": True, "id": contact_id})
+
+
+@app.route("/api/contacts/<int:contact_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_update_contact(contact_id):
+    """Update a contact (supports many-to-many groups via group_ids)."""
+    data = request.get_json()
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+
+    updates = []
+    params = []
+    for field in ("name", "email", "phone", "contact_group_id", "is_favorite", "default_server_id", "notes"):
+        if field in data:
+            updates.append(f"{field}=?")
+            params.append(data[field])
+    if not updates:
+        conn.close()
+        return jsonify({"success": False, "error": "No fields to update"}), 400
+
+    params.append(contact_id)
+    params.append(user_id)
+    cursor.execute(
+        f"UPDATE contacts SET {', '.join(updates)} WHERE id=? AND user_id=?",
+        params,
+    )
+    ok = cursor.rowcount > 0
+
+    # Update many-to-many group memberships if provided
+    if "group_ids" in data:
+        cursor.execute(
+            "DELETE FROM contact_group_members WHERE contact_id=?",
+            (contact_id,),
+        )
+        group_ids = data["group_ids"]
+        if not group_ids and data.get("contact_group_id"):
+            group_ids = [data["contact_group_id"]]
+        for gid in group_ids:
+            cursor.execute(
+                "INSERT OR IGNORE INTO contact_group_members (contact_id, contact_group_id) VALUES (?, ?)",
+                (contact_id, gid),
+            )
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/contacts/<int:contact_id>", methods=["DELETE"])
+@login_required
+def api_delete_contact(contact_id):
+    """Delete a contact."""
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM contact_group_members WHERE contact_id=?",
+        (contact_id,),
+    )
+    cursor.execute(
+        "DELETE FROM contacts WHERE id=? AND user_id=?",
+        (contact_id, user_id),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/contact-groups", methods=["GET"])
+@login_required
+def api_get_contact_groups():
+    """List contact groups (count from many-to-many junction table)."""
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT cg.*, (SELECT COUNT(*) FROM contact_group_members cgm WHERE cgm.contact_group_id=cg.id) as contact_count "
+        "FROM contact_groups cg WHERE cg.user_id=? ORDER BY cg.sort_order ASC, cg.name ASC",
+        (user_id,),
+    )
+    groups = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"contact_groups": groups})
+
+
+@app.route("/api/contact-groups", methods=["POST"])
+@login_required
+@json_body
+def api_add_contact_group():
+    """Add a contact group."""
+    data = request.get_json()
+    user_id = session["user_id"]
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Group name is required"}), 400
+
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO contact_groups (user_id, name) VALUES (?, ?)",
+        (user_id, name),
+    )
+    conn.commit()
+    group_id = cursor.lastrowid
+    conn.close()
+    return jsonify({"success": True, "id": group_id})
+
+
+@app.route("/api/contact-groups/<int:group_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_update_contact_group(group_id):
+    """Update a contact group."""
+    data = request.get_json()
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    name = data.get("name", "").strip()
+    if not name:
+        conn.close()
+        return jsonify({"error": "Group name is required"}), 400
+    cursor.execute(
+        "UPDATE contact_groups SET name=? WHERE id=? AND user_id=?",
+        (name, group_id, user_id),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+    return jsonify({"success": ok})
+
+
+@app.route("/api/contact-groups/<int:group_id>", methods=["DELETE"])
+@login_required
+def api_delete_contact_group(group_id):
+    """Delete a contact group (removes group from all contacts)."""
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM contact_group_members WHERE contact_group_id=?",
+        (group_id,),
+    )
+    cursor.execute(
+        "UPDATE contacts SET contact_group_id=NULL WHERE contact_group_id=? AND user_id=?",
+        (group_id, user_id),
+    )
+    cursor.execute(
+        "DELETE FROM contact_groups WHERE id=? AND user_id=?",
+        (group_id, user_id),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    conn.close()
+    return jsonify({"success": ok})
 
 
 # ---------------------------------------------------------------------------

@@ -146,6 +146,42 @@ CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails(message_id);
 CREATE INDEX IF NOT EXISTS idx_sender_groups_user ON sender_groups(user_id);
 CREATE INDEX IF NOT EXISTS idx_forward_rules_user ON forward_rules(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_imp_groups_user_name ON importance_groups(user_id, name);
+
+CREATE TABLE IF NOT EXISTS contact_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT DEFAULT '',
+    contact_group_id INTEGER,
+    is_favorite INTEGER DEFAULT 0,
+    default_server_id INTEGER,
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (contact_group_id) REFERENCES contact_groups(id) ON DELETE SET NULL,
+    FOREIGN KEY (default_server_id) REFERENCES email_servers(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS contact_group_members (
+    contact_id INTEGER NOT NULL,
+    contact_group_id INTEGER NOT NULL,
+    PRIMARY KEY (contact_id, contact_group_id),
+    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+    FOREIGN KEY (contact_group_id) REFERENCES contact_groups(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_group ON contacts(contact_group_id);
+CREATE INDEX IF NOT EXISTS idx_contact_groups_user ON contact_groups(user_id);
+CREATE INDEX IF NOT EXISTS idx_contact_group_members_group ON contact_group_members(contact_group_id);
 """
 
 
@@ -252,6 +288,81 @@ def init_user_db(user_id: int):
 
     try:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_server_uid ON emails(server_id, server_uid)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Create contacts and contact_groups tables if not present (migration for existing DBs)
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contact_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL,
+                phone TEXT DEFAULT '',
+                contact_group_id INTEGER,
+                is_favorite INTEGER DEFAULT 0,
+                default_server_id INTEGER,
+                notes TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (contact_group_id) REFERENCES contact_groups(id) ON DELETE SET NULL,
+                FOREIGN KEY (default_server_id) REFERENCES email_servers(id) ON DELETE SET NULL
+            )
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_group ON contacts(contact_group_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_contact_groups_user ON contact_groups(user_id)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Create contact_group_members junction table (many-to-many)
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contact_group_members (
+                contact_id INTEGER NOT NULL,
+                contact_group_id INTEGER NOT NULL,
+                PRIMARY KEY (contact_id, contact_group_id),
+                FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+                FOREIGN KEY (contact_group_id) REFERENCES contact_groups(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_contact_group_members_group ON contact_group_members(contact_group_id)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Migrate existing contact_group_id values to contact_group_members (idempotent)
+    try:
+        cursor.execute("""
+            INSERT OR IGNORE INTO contact_group_members (contact_id, contact_group_id)
+            SELECT id, contact_group_id FROM contacts WHERE contact_group_id IS NOT NULL
+        """)
         conn.commit()
     except sqlite3.OperationalError:
         pass
