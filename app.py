@@ -928,10 +928,20 @@ def api_move_email(email_id):
 
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE emails SET folder=? WHERE id=? AND user_id=?",
-        (folder, email_id, session["user_id"]),
-    )
+
+    if folder == "deleted":
+        # Save original folder before overwriting (only on first deletion)
+        cursor.execute(
+            "UPDATE emails SET original_folder = CASE WHEN original_folder IS NULL THEN folder ELSE original_folder END, "
+            "folder=? WHERE id=? AND user_id=?",
+            (folder, email_id, session["user_id"]),
+        )
+    else:
+        cursor.execute(
+            "UPDATE emails SET folder=? WHERE id=? AND user_id=?",
+            (folder, email_id, session["user_id"]),
+        )
+
     conn.commit()
     ok = cursor.rowcount > 0
     conn.close()
@@ -941,6 +951,37 @@ def api_move_email(email_id):
         process_forward_rules(session["user_id"], email_id)
 
     return jsonify({"success": ok})
+
+
+@app.route("/api/emails/<int:email_id>/restore", methods=["POST"])
+@login_required
+def api_restore_email(email_id):
+    """Restore a deleted email back to its original folder."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT folder, original_folder FROM emails WHERE id=? AND user_id=?",
+        (email_id, session["user_id"]),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Email not found"}), 404
+
+    if row["folder"] != "deleted":
+        conn.close()
+        return jsonify({"error": "Email is not in trash"}), 400
+
+    target = row["original_folder"] if row["original_folder"] in ("inbox", "outbox", "drafts") else "inbox"
+
+    cursor.execute(
+        "UPDATE emails SET folder=?, original_folder=NULL WHERE id=? AND user_id=?",
+        (target, email_id, session["user_id"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "restored_to": target})
 
 
 @app.route("/api/emails/mark-read", methods=["POST"])

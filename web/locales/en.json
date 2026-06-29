@@ -45,5 +45,9 @@
   "Bullet List": "Bullet List",
   "Numbered List": "Numbered List",
   "Insert Link": "Insert Link",
-  "Enter link URL:": "Enter link URL:"
+  "Enter link URL:": "Enter link URL:",
+  "Restore": "Restore",
+  "Restore Email": "Restore Email",
+  "Move this email back to its original folder?": "Move this email back to its original folder?",
+  "Failed to restore: {0}": "Failed to restore: {0}"
 }

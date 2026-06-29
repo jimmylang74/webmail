@@ -281,6 +281,12 @@ def init_user_db(user_id: int):
         pass
 
     try:
+        cursor.execute("ALTER TABLE emails ADD COLUMN original_folder TEXT DEFAULT NULL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
         cursor.execute("ALTER TABLE email_servers ADD COLUMN max_emails_per_fetch INTEGER DEFAULT 50")
         conn.commit()
     except sqlite3.OperationalError:

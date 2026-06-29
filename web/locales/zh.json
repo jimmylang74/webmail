@@ -200,5 +200,9 @@
   "Bullet List": "无序列表",
   "Numbered List": "有序列表",
   "Insert Link": "插入链接",
-  "Enter link URL:": "请输入链接地址："
+  "Enter link URL:": "请输入链接地址：",
+  "Restore": "恢复",
+  "Restore Email": "恢复邮件",
+  "Move this email back to its original folder?": "将此邮件恢复到原文件夹？",
+  "Failed to restore: {0}": "恢复失败：{0}"
 }

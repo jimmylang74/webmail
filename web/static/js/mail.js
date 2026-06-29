@@ -465,10 +465,17 @@ async function openEmail(emailId) {
     // Refresh tree to update unread counts (preserves expanded/selected state)
     loadTree();
 
-    // Show "Edit Draft" button for draft emails
+    const deleteBtn = document.getElementById('deleteBtn');
+    const restoreBtn = document.getElementById('restoreBtn');
     const editDraftBtn = document.getElementById('editDraftBtn');
-    if (editDraftBtn) {
-      editDraftBtn.style.display = (email.folder === 'drafts') ? '' : 'none';
+    if (email.folder === 'deleted') {
+      if (deleteBtn) deleteBtn.style.display = 'none';
+      if (restoreBtn) restoreBtn.style.display = '';
+      if (editDraftBtn) editDraftBtn.style.display = 'none';
+    } else {
+      if (deleteBtn) deleteBtn.style.display = '';
+      if (restoreBtn) restoreBtn.style.display = 'none';
+      if (editDraftBtn) editDraftBtn.style.display = (email.folder === 'drafts') ? '' : 'none';
     }
   } catch (err) {
     alert(__('Failed to load email: {0}', err.message));
@@ -500,6 +507,23 @@ async function deleteCurrentEmail() {
     loadTree();
   } catch (err) {
     alert(__('Failed to delete: {0}', err.message));
+  }
+}
+
+async function restoreCurrentEmail() {
+  if (!currentState.currentEmailId) return;
+  if (!(await showDialog({ title: __('Restore Email'), message: __('Move this email back to its original folder?') }))) return;
+
+  try {
+    const result = await api(`/api/emails/${currentState.currentEmailId}/restore`, {
+      method: 'POST',
+    });
+    if (result.success) {
+      showEmptyState();
+      loadTree();
+    }
+  } catch (err) {
+    alert(__('Failed to restore: {0}', err.message));
   }
 }
 

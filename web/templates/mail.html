@@ -81,7 +81,8 @@
         <!-- Email Detail View -->
         <div id="emailDetailView" class="email-detail-view" style="display:none;">
           <div class="email-detail-toolbar">
-            <button class="btn btn-sm btn-outline" onclick="deleteCurrentEmail()">&#128465; {{ T('Delete') }}</button>
+            <button class="btn btn-sm btn-outline" id="deleteBtn" onclick="deleteCurrentEmail()">&#128465; {{ T('Delete') }}</button>
+            <button class="btn btn-sm btn-outline" id="restoreBtn" onclick="restoreCurrentEmail()" style="display:none;">&#128259; {{ T('Restore') }}</button>
             <button class="btn btn-sm btn-outline" onclick="forwardEmail()">&#8618; {{ T('Forward') }}</button>
             <button class="btn btn-sm btn-outline" id="editDraftBtn" onclick="editDraft()" style="display:none;">&#9998; {{ T('Edit Draft') }}</button>
           </div>
