@@ -381,3 +381,45 @@
 
 /* ===== Content area with no list view ===== */
 .content-area .empty-state { flex: 1; display: flex; }
+
+/* ===== HTML Editor ===== */
+.editor-toolbar {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  padding: 6px 8px; border: 1px solid var(--border-color);
+  border-bottom: none; border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--bg-secondary);
+}
+.editor-btn {
+  padding: 4px 10px; border: 1px solid transparent; border-radius: 3px;
+  background: transparent; color: var(--text-primary); cursor: pointer;
+  font-size: 0.85rem; transition: background 0.1s; user-select: none;
+}
+.editor-btn:hover { background: var(--bg-primary); }
+.editor-btn.editor-btn-active {
+  background: var(--accent); color: #fff;
+}
+.editor-divider {
+  width: 1px; height: 20px; background: var(--border-color); margin: 0 4px; flex-shrink: 0;
+}
+.rich-editor {
+  min-height: 280px; max-height: 480px; overflow-y: auto;
+  padding: 12px; border: 1px solid var(--border-color);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-primary); color: var(--text-primary);
+  font-size: 0.95rem; line-height: 1.6; outline: none;
+}
+.rich-editor:focus { border-color: var(--accent); }
+.rich-editor:empty:before {
+  content: attr(data-placeholder); color: var(--text-secondary);
+  pointer-events: none;
+}
+.editor-mode-bar {
+  display: flex; align-items: center; gap: 2px; padding: 4px 8px;
+  border: 1px solid var(--border-color); border-bottom: none;
+  background: var(--bg-secondary); font-size: 0.8rem;
+}
+.editor-mode-bar .editor-btn { font-size: 0.8rem; padding: 2px 8px; }
+.editor-mode-sep { color: var(--border-color); font-size: 0.8rem; padding: 0 4px; user-select: none; }
+.compose-body-plain {
+  border-radius: 0 0 var(--radius) var(--radius) !important;
+}

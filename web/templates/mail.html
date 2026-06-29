@@ -96,7 +96,23 @@
                 <input type="text" id="composeSubject" placeholder="{{ T('Subject') }}">
               </div>
               <div class="form-group">
-                <textarea id="composeBody" rows="15" placeholder="{{ T('Write your message...') }}"></textarea>
+                <div class="editor-toolbar" id="editorToolbar">
+                  <button type="button" class="editor-btn" onclick="execFormat('bold')" title="{{ T('Bold') }}"><b>B</b></button>
+                  <button type="button" class="editor-btn" onclick="execFormat('italic')" title="{{ T('Italic') }}"><i>I</i></button>
+                  <button type="button" class="editor-btn" onclick="execFormat('underline')" title="{{ T('Underline') }}"><u>U</u></button>
+                  <span class="editor-divider"></span>
+                  <button type="button" class="editor-btn" onclick="execFormat('insertUnorderedList')" title="{{ T('Bullet List') }}">&#8226;</button>
+                  <button type="button" class="editor-btn" onclick="execFormat('insertOrderedList')" title="{{ T('Numbered List') }}">1.</button>
+                  <span class="editor-divider"></span>
+                  <button type="button" class="editor-btn" onclick="execFormat('createLink')" title="{{ T('Insert Link') }}">&#128279;</button>
+                </div>
+                <div class="editor-mode-bar" id="editorModeBar">
+                  <button type="button" class="editor-btn editor-btn-active" id="editorModeRich" onclick="setEditorMode('richtext')">{{ T('Rich Text') }}</button>
+                  <span class="editor-mode-sep">|</span>
+                  <button type="button" class="editor-btn" id="editorModePlain" onclick="setEditorMode('plain')">{{ T('Plain Text') }}</button>
+                </div>
+                <div id="richEditor" class="rich-editor" contenteditable="true" data-placeholder="{{ T('Write your message...') }}"></div>
+                <textarea id="composeBody" class="compose-body-plain" rows="15" placeholder="{{ T('Write your message...') }}" style="display:none;"></textarea>
               </div>
               <div class="compose-actions">
                 <button type="submit" class="btn btn-primary">{{ T('Send') }}</button>

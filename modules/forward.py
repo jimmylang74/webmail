@@ -135,6 +135,17 @@ def process_forward_rules(user_id: int, email_id: int) -> list:
         conn2.close()
 
         if srv:
+            body_html = email_data.get("body_html") or ""
+            fwd_html = (
+                '<div style="padding-bottom:8px;margin-bottom:8px;'
+                'border-bottom:1px solid #ccc;color:#666;font-size:12px;">'
+                "<strong>---------- Forwarded email ----------</strong><br>"
+                f"<b>From:</b> {email_data['sender']}<br>"
+                f"<b>Subject:</b> {email_data['subject']}<br>"
+                f"<b>Date:</b> {email_data['received_date']}<br>"
+                "</div>" + body_html
+            ) if body_html.strip() else ""
+
             result = send_email(
                 user_id=user_id,
                 server_id=srv["id"],
@@ -145,6 +156,7 @@ def process_forward_rules(user_id: int, email_id: int) -> list:
                           f"Subject: {email_data['subject']}\n"
                           f"Date: {email_data['received_date']}\n\n"
                           f"{email_data['body_text']}",
+                body_html=fwd_html,
             )
             results.append(result)
 

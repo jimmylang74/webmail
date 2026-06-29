@@ -483,7 +483,7 @@ async function editDraft() {
     if (email.folder !== 'drafts') return;
     // Ensure server list is loaded before selecting
     await (serversLoaded || Promise.resolve());
-    showCompose(email.subject, email.server_id, email.body_text, email.recipients, email.id);
+    showCompose(email.subject, email.server_id, email.body_text, email.recipients, email.id, email.body_html);
   } catch (_) {}
 }
 
@@ -510,6 +510,7 @@ async function forwardEmail() {
   let serverId = null;
   let fwdSubject = '';
   let fwdBody = '';
+  let fwdHtml = '';
   try {
     const data = await api(`/api/emails/${currentState.currentEmailId}`);
     const email = data.email;
@@ -535,15 +536,30 @@ async function forwardEmail() {
       }
       fwdSubject = email.subject || '';
       const date = email.received_date ? new Date(email.received_date).toLocaleString() : '';
+      const textContent = email.body_text || '';
+      const htmlContent = email.body_html || '';
+
+      // Plain text forward body
       fwdBody = '---------- Forwarded email ----------\n'
               + 'From: ' + (email.sender || '') + '\n'
               + 'Subject: ' + (email.subject || '') + '\n'
               + (date ? 'Date: ' + date + '\n' : '')
               + '\n'
-              + (email.body_text || __('(No content)'));
+              + (textContent || __('(No content)'));
+
+      // HTML forward body (include original HTML formatting)
+      if (htmlContent.trim()) {
+        fwdHtml = '<div style="padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid #ccc;color:#666;font-size:12px;">'
+                + '<strong>---------- Forwarded email ----------</strong><br>'
+                + '<b>From:</b> ' + escHtml(email.sender || '') + '<br>'
+                + '<b>Subject:</b> ' + escHtml(email.subject || '') + '<br>'
+                + (date ? '<b>Date:</b> ' + escHtml(date) + '<br>' : '')
+                + '</div>'
+                + htmlContent;
+      }
     }
   } catch (_) {}
-  showCompose(fwdSubject, serverId, fwdBody);
+  showCompose(fwdSubject, serverId, fwdBody, null, null, fwdHtml);
 }
 
 // ===== Context Menu =====
@@ -797,6 +813,88 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// ===== HTML Editor =====
+let editorMode = 'richtext'; // 'richtext' | 'plain'
+
+function execFormat(cmd) {
+  const editor = document.getElementById('richEditor');
+  editor.focus();
+  if (cmd === 'createLink') {
+    const url = prompt(__('Enter link URL:'), 'https://');
+    if (url) document.execCommand('createLink', false, url);
+  } else {
+    document.execCommand(cmd, false, null);
+  }
+}
+
+function setEditorMode(mode) {
+  const richEditor = document.getElementById('richEditor');
+  const textarea = document.getElementById('composeBody');
+  const toolbar = document.getElementById('editorToolbar');
+  const btnRich = document.getElementById('editorModeRich');
+  const btnPlain = document.getElementById('editorModePlain');
+
+  if (mode === 'plain') {
+    // Sync rich editor → plain text
+    textarea.value = richEditor.innerText || '';
+    richEditor.style.display = 'none';
+    textarea.style.display = 'block';
+    toolbar.style.display = 'none';
+    btnPlain.classList.add('editor-btn-active');
+    btnRich.classList.remove('editor-btn-active');
+    editorMode = 'plain';
+  } else {
+    // Sync plain text → rich editor
+    const txt = textarea.value;
+    if (txt && !richEditor.innerHTML.trim()) {
+      richEditor.innerHTML = escHtml(txt).replace(/\n/g, '<br>');
+    }
+    richEditor.style.display = 'block';
+    textarea.style.display = 'none';
+    toolbar.style.display = 'flex';
+    btnRich.classList.add('editor-btn-active');
+    btnPlain.classList.remove('editor-btn-active');
+    editorMode = 'richtext';
+  }
+}
+
+function getBodyText() {
+  if (editorMode === 'richtext') {
+    return document.getElementById('richEditor').innerText || '';
+  }
+  return document.getElementById('composeBody').value || '';
+}
+
+function getBodyHtml() {
+  if (editorMode === 'richtext') {
+    return document.getElementById('richEditor').innerHTML || '';
+  }
+  return '';
+}
+
+function setEditorContent(bodyText, bodyHtml) {
+  const richEditor = document.getElementById('richEditor');
+  const textarea = document.getElementById('composeBody');
+  const hasHtml = bodyHtml && bodyHtml.trim();
+
+  if (hasHtml) {
+    // Has HTML content — show in rich text mode
+    richEditor.innerHTML = bodyHtml;
+    textarea.value = bodyText || richEditor.innerText || '';
+    if (editorMode === 'plain') setEditorMode('richtext');
+  } else if (bodyText) {
+    // Plain text only — show in rich text mode with <br> conversion
+    richEditor.innerHTML = escHtml(bodyText).replace(/\n/g, '<br>');
+    textarea.value = bodyText;
+    if (editorMode === 'plain') setEditorMode('richtext');
+  } else {
+    // Empty — reset
+    richEditor.innerHTML = '';
+    textarea.value = '';
+    if (editorMode !== 'richtext') setEditorMode('richtext');
+  }
+}
+
 // ===== Compose =====
 let serversLoaded = null; // Promise tracking when server list is populated
 
@@ -822,7 +920,7 @@ function composeNew() {
   showCompose(null);
 }
 
-function showCompose(subject, preselectServerId, bodyText, recipients, draftId) {
+function showCompose(subject, preselectServerId, bodyText, recipients, draftId, bodyHtml) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('emailDetailView').style.display = 'none';
   const composeView = document.getElementById('composeView');
@@ -830,7 +928,7 @@ function showCompose(subject, preselectServerId, bodyText, recipients, draftId) 
   composeView.style.flex = '1';
   document.getElementById('composeTo').value = recipients || '';
   document.getElementById('composeSubject').value = (subject || '');
-  document.getElementById('composeBody').value = bodyText || '';
+  setEditorContent(bodyText || '', bodyHtml || '');
   document.getElementById('composeStatus').textContent = '';
   currentDraftId = draftId || null;
   if (preselectServerId) {
@@ -864,7 +962,8 @@ async function sendEmail(e) {
         server_id: parseInt(document.getElementById('composeServer').value),
         to: document.getElementById('composeTo').value.trim(),
         subject: document.getElementById('composeSubject').value.trim(),
-        body_text: document.getElementById('composeBody').value,
+        body_text: getBodyText(),
+        body_html: getBodyHtml(),
       },
     });
 
@@ -891,7 +990,8 @@ async function saveDraft() {
       server_id: parseInt(document.getElementById('composeServer').value) || null,
       to: document.getElementById('composeTo').value.trim(),
       subject: document.getElementById('composeSubject').value.trim(),
-      body_text: document.getElementById('composeBody').value,
+      body_text: getBodyText(),
+      body_html: getBodyHtml(),
     };
     if (currentDraftId) {
       body.draft_id = currentDraftId;

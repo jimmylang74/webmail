@@ -36,5 +36,14 @@
   "Failed": "Failed",
   "Fetch already in progress": "Fetch already in progress",
   "Fetching...": "Fetching...",
-  "Fetch started...": "Fetch started..."
+  "Fetch started...": "Fetch started...",
+  "Rich Text": "Rich Text",
+  "Plain Text": "Plain Text",
+  "Bold": "Bold",
+  "Italic": "Italic",
+  "Underline": "Underline",
+  "Bullet List": "Bullet List",
+  "Numbered List": "Numbered List",
+  "Insert Link": "Insert Link",
+  "Enter link URL:": "Enter link URL:"
 }

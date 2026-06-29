@@ -191,5 +191,14 @@
   "Done": "完成",
   "Failed": "失败",
   "Fetch already in progress": "正在收取中",
-  "Fetch started...": "开始收取..."
+  "Fetch started...": "开始收取...",
+  "Rich Text": "富文本",
+  "Plain Text": "纯文本",
+  "Bold": "加粗",
+  "Italic": "斜体",
+  "Underline": "下划线",
+  "Bullet List": "无序列表",
+  "Numbered List": "有序列表",
+  "Insert Link": "插入链接",
+  "Enter link URL:": "请输入链接地址："
 }
