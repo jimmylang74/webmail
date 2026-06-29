@@ -234,6 +234,10 @@ function createTreeItem(node, depth) {
     } else if (node.id === 'inbox') {
       contextMenuTarget = {type: 'folder', id: 'inbox'};
       showContextMenu(e.clientX, e.clientY);
+    } else if (node.server_id) {
+      // Server-grouped inbox (when "Group by server" is checked)
+      contextMenuTarget = {type: 'folder', id: 'inbox', serverId: node.server_id};
+      showContextMenu(e.clientX, e.clientY);
     }
   });
 
@@ -732,12 +736,14 @@ async function markGroupAsRead() {
   if (!target) return;
 
   try {
-    if (target.type === 'folder') {
-      await api('/api/emails/mark-read', {
-        method: 'POST',
-        body: { scope: 'folder' },
-      });
-    } else if (target.type === 'imp') {
+      if (target.type === 'folder') {
+        const body = { scope: 'folder' };
+        if (target.serverId) body.server_id = target.serverId;
+	      await api('/api/emails/mark-read', {
+	        method: 'POST',
+	        body,
+	      });
+	    } else if (target.type === 'imp') {
       await api('/api/emails/mark-read', {
         method: 'POST',
         body: { scope: 'imp', imp_group_id: target.id },
@@ -760,10 +766,11 @@ async function markGroupAsUnread() {
   if (!target) return;
 
   try {
-    const body = { read: false };
-    if (target.type === 'folder') {
-      body.scope = 'folder';
-    } else if (target.type === 'imp') {
+      const body = { read: false };
+	    if (target.type === 'folder') {
+	      body.scope = 'folder';
+        if (target.serverId) body.server_id = target.serverId;
+	    } else if (target.type === 'imp') {
       body.scope = 'imp';
       body.imp_group_id = target.id;
     } else if (target.type === 'sender') {

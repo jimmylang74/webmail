@@ -961,10 +961,17 @@ def api_mark_read():
     cursor = conn.cursor()
 
     if scope == "folder":
-        cursor.execute(
-            "UPDATE emails SET is_read=? WHERE user_id=? AND folder='inbox'",
-            (is_read, user_id),
-        )
+        server_id = data.get("server_id")
+        if server_id:
+            cursor.execute(
+                "UPDATE emails SET is_read=? WHERE user_id=? AND folder='inbox' AND server_id=?",
+                (is_read, user_id, server_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE emails SET is_read=? WHERE user_id=? AND folder='inbox'",
+                (is_read, user_id),
+            )
     elif scope == "imp":
         imp_group_id = data.get("imp_group_id")
         if not imp_group_id:
