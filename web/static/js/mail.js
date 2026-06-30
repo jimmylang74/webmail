@@ -1861,12 +1861,13 @@ function showContactContextMenu(e, target) {
   const addContact = document.getElementById('ctxCtcAddContact');
   const groupRename = document.getElementById('ctxCtcGroupRename');
   const groupDelete = document.getElementById('ctxCtcGroupDelete');
+  const locateGroup = document.getElementById('ctxCtcLocateGroup');
   const sendEmail = document.getElementById('ctxCtcSendEmail');
   const editContactEl = document.getElementById('ctxCtcEditContact');
   const deleteContactEl = document.getElementById('ctxCtcDeleteContact');
   const div1 = document.getElementById('ctxCtcDiv1');
   const div2 = document.getElementById('ctxCtcDiv2');
-  [addGroup, addContact, groupRename, groupDelete, sendEmail, editContactEl, deleteContactEl, div1, div2].forEach(el => { if (el) el.style.display = 'none'; });
+  [addGroup, addContact, groupRename, groupDelete, locateGroup, sendEmail, editContactEl, deleteContactEl, div1, div2].forEach(el => { if (el) el.style.display = 'none'; });
   if (!target) {
     if (addGroup) addGroup.style.display = 'flex';
     if (addContact) addContact.style.display = 'flex';
@@ -1874,6 +1875,7 @@ function showContactContextMenu(e, target) {
     if (groupRename) groupRename.style.display = 'flex';
     if (groupDelete) groupDelete.style.display = 'flex';
   } else if (target.type === 'contact') {
+    if (locateGroup) locateGroup.style.display = 'flex';
     if (sendEmail) sendEmail.style.display = 'flex';
     if (editContactEl) editContactEl.style.display = 'flex';
     if (deleteContactEl) deleteContactEl.style.display = 'flex';
@@ -1928,6 +1930,93 @@ function ctcCtxSendEmail() {
   showCompose(null);
   const toField = document.getElementById('composeTo');
   if (toField) toField.value = target.email;
+}
+async function ctcCtxLocateGroup() {
+  const target = contactCtxTarget;
+  hideContactContextMenu();
+  if (!target || !target.email) return;
+
+  const atIdx = target.email.indexOf('@');
+  if (atIdx < 0) { alert(__('Invalid email address')); return; }
+  const domain = target.email.slice(atIdx + 1).toLowerCase();
+  if (!domain) { alert(__('Invalid email address')); return; }
+
+  try {
+    const data = await api('/api/mailbox/tree');
+
+    let targetNodeId = null;
+    let targetImpGroupId = null;
+    let targetSenderGroupId = null;
+    let expandIds = [];
+
+    (function searchNodes(nodes, ancestors) {
+      for (const node of nodes) {
+        if (node.sender_group_id && node.email) {
+          const m = node.email.match(/@([\w.-]+)/);
+          const nodeDomain = m ? m[1].toLowerCase() : '';
+          if (nodeDomain === domain) {
+            targetNodeId = node.id;
+            targetImpGroupId = node.imp_group_id;
+            targetSenderGroupId = node.sender_group_id;
+            expandIds = ancestors;
+            return true;
+          }
+        }
+        if (node.children && node.children.length > 0) {
+          if (searchNodes(node.children, [...ancestors, node.id])) return true;
+        }
+      }
+      return false;
+    })(data.folders, []);
+
+    if (!targetNodeId || !targetSenderGroupId) {
+      alert(__('No sender group found matching domain: {0}', domain));
+      return;
+    }
+
+    const container = document.getElementById('treeMenu');
+    container.innerHTML = '';
+    data.folders.forEach(folder => {
+      container.appendChild(createTreeItem(folder, 0));
+    });
+
+    document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+
+    expandIds.forEach(id => {
+      const w = document.querySelector(`[data-node-id="${CSS.escape(id)}"]`);
+      if (w) {
+        const ch = w.querySelector('.tree-children');
+        const tg = w.querySelector('.tree-toggle');
+        if (ch) ch.classList.remove('collapsed');
+        if (tg) tg.classList.remove('collapsed');
+      }
+    });
+
+    const targetEl = document.querySelector(`[data-node-id="${CSS.escape(targetNodeId)}"]`);
+    if (targetEl) {
+      const ch = targetEl.querySelector('.tree-children');
+      const tg = targetEl.querySelector('.tree-toggle');
+      if (ch) ch.classList.remove('collapsed');
+      if (tg) tg.classList.remove('collapsed');
+      showEmptyState();
+
+      currentState.currentSenderGroupId = targetSenderGroupId;
+      currentState.currentImpGroupId = targetImpGroupId;
+      currentState.currentFolder = 'inbox';
+
+      // Re-apply active class (cleared by showEmptyState)
+      const renewedEl = document.querySelector(`[data-node-id="${CSS.escape(targetNodeId)}"]`);
+      if (renewedEl) {
+        const mainItem = renewedEl.querySelector('.tree-item');
+        if (mainItem) mainItem.classList.add('active');
+      }
+
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  } catch (err) {
+    console.error('Failed to locate group:', err);
+    alert(__('Failed to locate sender group'));
+  }
 }
 function ctcCtxEditContact() {
   const target = contactCtxTarget;

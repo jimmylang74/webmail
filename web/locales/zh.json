@@ -214,5 +214,10 @@
   "Deleted folder emptied": "已清空已删除文件夹",
   "This will permanently delete the server copies as well.": "这将同步删除服务器上的备份邮件。",
   "This will permanently delete the email from the database.": "此操作将从此数据库中彻底删除邮件。",
-  "Delete this email permanently?": "永久删除此邮件？"
+  "Delete this email permanently?": "永久删除此邮件？",
+
+  "Find in Inbox": "在收件箱中查找",
+  "No sender group found matching domain: {0}": "未找到域名匹配的发件人分组：{0}",
+  "Failed to locate sender group": "定位发件人分组失败",
+  "Invalid email address": "无效的邮箱地址"
 }

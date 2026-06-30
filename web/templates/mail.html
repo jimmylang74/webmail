@@ -61,7 +61,7 @@
       <div class="splitter splitter-v" id="splitterV"></div>
 
       <!-- Contact Panel (collapsible) -->
-      <div class="contact-panel" id="contactPanel">
+      <div class="contact-panel collapsed" id="contactPanel">
         <div class="contact-panel-header">
           <span class="contact-panel-title">{{ T('Contacts') }}</span>
           <button class="contact-panel-close" onclick="toggleContactPanel()" title="{{ T('Close') }}">&times;</button>
@@ -72,7 +72,7 @@
       </div>
 
       <!-- Contact / Content Splitter -->
-      <div class="splitter splitter-v" id="splitterVC"></div>
+      <div class="splitter splitter-v" id="splitterVC" style="display:none"></div>
 
       <!-- Right: Content Area -->
       <div class="content-area" id="contentArea">
@@ -216,6 +216,10 @@
       <span>{{ T('Delete') }}</span>
     </div>
     <div class="context-menu-divider" id="ctxCtcDiv2"></div>
+    <div class="context-menu-item" id="ctxCtcLocateGroup" onclick="ctcCtxLocateGroup()">
+      <span class="ctx-icon">&#128269;</span>
+      <span>{{ T('Find in Inbox') }}</span>
+    </div>
     <div class="context-menu-item" id="ctxCtcSendEmail" onclick="ctcCtxSendEmail()">
       <span class="ctx-icon">&#9993;</span>
       <span>{{ T('Send Email') }}</span>
