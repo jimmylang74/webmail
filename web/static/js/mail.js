@@ -2,6 +2,9 @@
 
 let currentState = {
   currentEmailId: null,
+  currentSenderGroupId: null,
+  currentImpGroupId: null,
+  currentFolder: 'inbox',
 };
 let allServers = [];
 let contextMenuTarget = null; // {type: 'imp'|'sender', id: int, serverId: int|null}
@@ -55,6 +58,79 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadTree();
     loadServersForCompose();
     startServerStatusBar();
+
+    document.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Delete') return;
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+
+      const folder = currentState.currentFolder || 'inbox';
+
+      if (currentState.currentEmailId) {
+        e.preventDefault();
+        if (folder === 'deleted') {
+          if (!(await showDialog({ title: __('Empty Deleted'), message: __('Delete this email permanently?') + ' ' + __('This will permanently delete the email from the database.') }))) return;
+          try {
+            const result = await api(`/api/emails/${currentState.currentEmailId}`, { method: 'DELETE' });
+            if (!result.success) { alert(__('Failed')); return; }
+            showEmptyState();
+            loadTree();
+          } catch (err) {
+            alert(__('Failed: {0}', err.message));
+          }
+        } else {
+          deleteCurrentEmail();
+        }
+      } else if (currentState.currentImpGroupId) {
+        e.preventDefault();
+        const serverChecked = document.getElementById('deleteServerCopy').checked;
+        let msg = __('Delete ALL emails in this group?');
+        if (serverChecked) {
+          msg += '\n\n' + __('Also delete from server') + ': ' + __('This will permanently delete the server copies as well.');
+        }
+        if (!(await showDialog({ title: __('Delete All'), message: msg }))) return;
+        try {
+          const url = `/api/emails/group/importance/${currentState.currentImpGroupId}` + (serverChecked ? '?delete_from_server=1' : '');
+          await api(url, { method: 'DELETE' });
+          showEmptyState();
+          loadTree();
+        } catch (err) {
+          alert(__('Failed: {0}', err.message));
+        }
+      } else if (currentState.currentSenderGroupId) {
+        e.preventDefault();
+        if (folder === 'deleted') {
+          if (!(await showDialog({ title: __('Empty Deleted'), message: __('Permanently delete all emails in Deleted folder?') }))) return;
+          try {
+            const result = await api(`/api/emails/deleted-group/${currentState.currentSenderGroupId}`, {
+              method: 'POST',
+              body: { action: 'clear' },
+            });
+            if (!result.success) { alert(__('Failed')); return; }
+            showEmptyState();
+            loadTree();
+          } catch (err) {
+            alert(__('Failed: {0}', err.message));
+          }
+        } else {
+          const isDrafts = folder === 'drafts';
+          const serverChecked = document.getElementById('deleteServerCopy').checked;
+          let msg = __('Delete ALL emails in this group?');
+          if (!isDrafts && serverChecked) {
+            msg += '\n\n' + __('Also delete from server') + ': ' + __('This will permanently delete the server copies as well.');
+          }
+          if (!(await showDialog({ title: __('Delete All'), message: msg }))) return;
+          try {
+            const url = `/api/emails/group/${currentState.currentSenderGroupId}` + (!isDrafts && serverChecked ? '?delete_from_server=1' : '');
+            await api(url, { method: 'DELETE' });
+            showEmptyState();
+            loadTree();
+          } catch (err) {
+            alert(__('Failed: {0}', err.message));
+          }
+        }
+      }
+    });
   }
 });
 
@@ -174,6 +250,7 @@ function createTreeItem(node, depth) {
 	      selectedEmailNodeId = node.id;
 	      document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
 	      main.classList.add('active');
+	      currentState.currentFolder = node.folder || 'inbox';
 	      openEmail(node.email_id);
 	    } else if (isSenderGroup && main.classList.contains('active')) {
 	      // Already selected sender group → enter inline edit mode
@@ -193,21 +270,22 @@ function createTreeItem(node, depth) {
 	      return;
 	    } else if (hasChildren) {
 	      // Click on group with children → select + toggle collapse
-	      if (isSenderGroup) {
-	        document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
-	        main.classList.add('active');
-	      } else if (isImpGroup) {
-	        // Also allow importance groups to be selectable for consistency
-	        document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
-	        main.classList.add('active');
-	      }
+	      showEmptyState();
 	      const childrenContainer = item.querySelector('.tree-children');
 	      if (childrenContainer) {
 	        childrenContainer.classList.toggle('collapsed');
 	        const toggleEl = main.querySelector('.tree-toggle');
 	        if (toggleEl) toggleEl.classList.toggle('collapsed');
 	      }
-	      showEmptyState();
+	      if (isSenderGroup) {
+	        main.classList.add('active');
+	        currentState.currentSenderGroupId = node.sender_group_id;
+	        currentState.currentFolder = node.folder || 'inbox';
+	      } else if (isImpGroup) {
+	        main.classList.add('active');
+	        currentState.currentImpGroupId = node.imp_group_id;
+	        currentState.currentFolder = 'inbox';
+	      }
 	    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
 	      // Click on root folder with no children → show empty state
 	      // (folders with children are handled by the hasChildren branch above)
@@ -223,13 +301,13 @@ function createTreeItem(node, depth) {
     e.preventDefault();
     e.stopPropagation();
     if (isEmail) {
-      contextMenuTarget = {type: 'email', id: node.email_id, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null, isRead: !!node.is_read};
+      contextMenuTarget = {type: 'email', id: node.email_id, folder: node.folder, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null, isRead: !!node.is_read};
       showContextMenu(e.clientX, e.clientY);
     } else if (isImpGroup) {
       contextMenuTarget = {type: 'imp', id: node.imp_group_id, serverId: node.server_id || null};
       showContextMenu(e.clientX, e.clientY);
     } else if (isSenderGroup) {
-      contextMenuTarget = {type: 'sender', id: node.sender_group_id, impGroupId: node.imp_group_id, serverId: node.server_id || null};
+      contextMenuTarget = {type: 'sender', id: node.sender_group_id, folder: node.folder, impGroupId: node.imp_group_id, serverId: node.server_id || null};
       showContextMenu(e.clientX, e.clientY);
     } else if (node.id === 'inbox') {
       contextMenuTarget = {type: 'folder', id: 'inbox'};
@@ -237,6 +315,9 @@ function createTreeItem(node, depth) {
     } else if (node.server_id) {
       // Server-grouped inbox (when "Group by server" is checked)
       contextMenuTarget = {type: 'folder', id: 'inbox', serverId: node.server_id};
+      showContextMenu(e.clientX, e.clientY);
+    } else if (node.id === 'deleted') {
+      contextMenuTarget = {type: 'folder', id: 'deleted'};
       showContextMenu(e.clientX, e.clientY);
     }
   });
@@ -371,6 +452,9 @@ function showEmptyState() {
   document.getElementById('composeView').style.display = 'none';
   document.getElementById('emptyState').style.display = 'flex';
   currentState.currentEmailId = null;
+  currentState.currentSenderGroupId = null;
+  currentState.currentImpGroupId = null;
+  currentState.currentFolder = 'inbox';
   // Clear email highlight
   document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
   selectedEmailNodeId = null;
@@ -382,6 +466,8 @@ async function openEmail(emailId) {
     const data = await api(`/api/emails/${emailId}`);
     const email = data.email;
     currentState.currentEmailId = emailId;
+    currentState.currentSenderGroupId = null;
+    currentState.currentImpGroupId = null;
 
     document.getElementById('composeView').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
@@ -496,13 +582,61 @@ async function editDraft() {
 
 async function deleteCurrentEmail() {
   if (!currentState.currentEmailId) return;
-  if (!(await showDialog({ title: __('Delete Email'), message: __('Move this email to trash?') }))) return;
+
+  const deleteServerChecked = document.getElementById('deleteServerCopy').checked;
+  let dialogMsg = __('Move this email to trash?');
+  if (deleteServerChecked) {
+    dialogMsg += '\n\n' + __('Also delete from server') + ': ' + __('This will permanently delete the server copies as well.');
+  }
+  if (!(await showDialog({ title: __('Delete Email'), message: dialogMsg }))) return;
 
   try {
-    await api(`/api/emails/${currentState.currentEmailId}/move`, {
+    const body = { folder: 'deleted' };
+    const deleteServerCopy = document.getElementById('deleteServerCopy');
+    if (deleteServerCopy && deleteServerCopy.checked) {
+      body.delete_from_server = true;
+    }
+    const result = await api(`/api/emails/${currentState.currentEmailId}/move`, {
       method: 'POST',
-      body: { folder: 'deleted' },
+      body,
     });
+    const deleteResult = result && result.delete_from_server;
+    if (deleteResult && !deleteResult.success) {
+      console.warn('Server delete failed:', deleteResult.error);
+    }
+    showEmptyState();
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to delete: {0}', err.message));
+  }
+}
+
+async function contextDeleteEmail() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target || target.type !== 'email') return;
+
+  const deleteServerChecked = document.getElementById('deleteServerCopy').checked;
+  let dialogMsg = __('Move this email to trash?');
+  if (deleteServerChecked) {
+    dialogMsg += '\n\n' + __('Also delete from server') + ': ' + __('This will permanently delete the server copies as well.');
+  }
+  if (!(await showDialog({ title: __('Delete'), message: dialogMsg }))) return;
+
+  try {
+    const body = { folder: 'deleted' };
+    const deleteServerCopy = document.getElementById('deleteServerCopy');
+    if (deleteServerCopy && deleteServerCopy.checked) {
+      body.delete_from_server = true;
+    }
+    const result = await api(`/api/emails/${target.id}/move`, {
+      method: 'POST',
+      body,
+    });
+    const deleteResult = result && result.delete_from_server;
+    if (deleteResult && !deleteResult.success) {
+      console.warn('Server delete failed:', deleteResult.error);
+    }
     showEmptyState();
     loadTree();
   } catch (err) {
@@ -604,75 +738,108 @@ function invalidateImpGroupCache() {
   cachedImpGroups = null;
 }
 
+function _hideAllContextItems() {
+  const ids = ['ctxMarkRead', 'ctxMarkUnread', 'ctxEditName', 'ctxAddContact',
+    'ctxDivider1', 'ctxMoveSection', 'ctxDivider2', 'ctxDeleteAll', 'ctxDeleteEmail',
+    'ctxDeletedDivider1', 'ctxDeletedRestore', 'ctxDeletedClear'];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+}
+
 function showContextMenu(x, y) {
   document.getElementById('contextMenu').classList.remove('show');
   const menu = document.getElementById('contextMenu');
   const target = contextMenuTarget;
   if (!target) return;
+  _hideAllContextItems();
 
-  // Build move-to submenu
   const moveSubmenu = document.getElementById('ctxMoveSubmenu');
   moveSubmenu.innerHTML = '';
 
-  getImpGroups().then(groups => {
-    groups.forEach(g => {
-      // Skip current group for email and sender (no point moving to where it already is)
-      if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
+  const isDeleted = target.folder === 'deleted' || target.id === 'deleted';
 
-      const item = document.createElement('div');
-      item.className = 'context-menu-item submenu-item';
-      item.textContent = g.name;
-      const impGroupId = g.id;
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const savedTarget = contextMenuTarget;
-        hideContextMenu();
-        if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
+  if (!isDeleted) {
+    getImpGroups().then(groups => {
+      groups.forEach(g => {
+        if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
+        const item = document.createElement('div');
+        item.className = 'context-menu-item submenu-item';
+        item.textContent = g.name;
+        const impGroupId = g.id;
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const savedTarget = contextMenuTarget;
+          hideContextMenu();
+          if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
+        });
+        moveSubmenu.appendChild(item);
       });
-      moveSubmenu.appendChild(item);
     });
-  });
+  }
 
-	  const markReadItem = document.getElementById('ctxMarkRead');
-	  const markUnreadItem = document.getElementById('ctxMarkUnread');
-	  const editNameItem = document.getElementById('ctxEditName');
-	  const deleteItem = document.getElementById('ctxDeleteAll');
-	  const divider1 = document.getElementById('ctxDivider1');
-	  const divider2 = document.getElementById('ctxDivider2');
-	  const moveSection = document.getElementById('ctxMoveSection');
-	  if (target.type === 'email') {
-	    markReadItem.style.display = 'none';
-	    markUnreadItem.style.display = 'flex';
-	    editNameItem.style.display = 'none';
-	    divider1.style.display = 'block';
-	    moveSection.style.display = 'block';
-	    divider2.style.display = 'none';
-	    deleteItem.style.display = 'none';
-	  } else if (target.type === 'folder') {
-	    markReadItem.style.display = 'flex';
-	    markUnreadItem.style.display = 'flex';
-	    editNameItem.style.display = 'none';
-	    divider1.style.display = 'none';
-	    moveSection.style.display = 'none';
-	    divider2.style.display = 'none';
-	    deleteItem.style.display = 'none';
-	  } else if (target.type === 'sender') {
-	    markReadItem.style.display = 'flex';
-	    markUnreadItem.style.display = 'flex';
-	    editNameItem.style.display = 'flex';
-	    divider1.style.display = 'block';
-	    moveSection.style.display = 'block';
-	    divider2.style.display = 'block';
-	    deleteItem.style.display = 'flex';
-	  } else {
-	    markReadItem.style.display = 'flex';
-	    markUnreadItem.style.display = 'flex';
-	    editNameItem.style.display = 'none';
-	    divider1.style.display = 'block';
-	    moveSection.style.display = 'block';
-	    divider2.style.display = 'block';
-	    deleteItem.style.display = 'flex';
-	  }
+  const markReadItem = document.getElementById('ctxMarkRead');
+  const markUnreadItem = document.getElementById('ctxMarkUnread');
+  const editNameItem = document.getElementById('ctxEditName');
+  const deleteGroupItem = document.getElementById('ctxDeleteAll');
+  const deleteEmailItem = document.getElementById('ctxDeleteEmail');
+  const divider1 = document.getElementById('ctxDivider1');
+  const divider2 = document.getElementById('ctxDivider2');
+  const moveSection = document.getElementById('ctxMoveSection');
+  const deletedClear = document.getElementById('ctxDeletedClear');
+  const deletedRestore = document.getElementById('ctxDeletedRestore');
+  const deletedDivider1 = document.getElementById('ctxDeletedDivider1');
+
+  if (isDeleted) {
+    if (target.id === 'deleted' && target.type === 'folder') {
+      deletedClear.style.display = 'flex';
+    } else if (target.type === 'sender') {
+      deletedRestore.style.display = 'flex';
+      deletedClear.style.display = 'flex';
+      deletedDivider1.style.display = 'block';
+    } else if (target.type === 'email') {
+      deletedRestore.style.display = 'flex';
+      deletedClear.style.display = 'flex';
+      deletedDivider1.style.display = 'block';
+    }
+  } else if (target.type === 'email') {
+    markReadItem.style.display = 'none';
+    markUnreadItem.style.display = 'flex';
+    editNameItem.style.display = 'none';
+    divider1.style.display = 'block';
+    moveSection.style.display = 'block';
+    divider2.style.display = 'block';
+    deleteEmailItem.style.display = 'flex';
+    deleteGroupItem.style.display = 'none';
+  } else if (target.type === 'folder') {
+    markReadItem.style.display = 'flex';
+    markUnreadItem.style.display = 'flex';
+    editNameItem.style.display = 'none';
+    divider1.style.display = 'none';
+    moveSection.style.display = 'none';
+    divider2.style.display = 'none';
+    deleteGroupItem.style.display = 'none';
+    deleteEmailItem.style.display = 'none';
+  } else if (target.type === 'sender') {
+    markReadItem.style.display = 'flex';
+    markUnreadItem.style.display = 'flex';
+    editNameItem.style.display = 'flex';
+    divider1.style.display = 'block';
+    moveSection.style.display = 'block';
+    divider2.style.display = 'block';
+    deleteGroupItem.style.display = 'flex';
+    deleteEmailItem.style.display = 'none';
+  } else {
+    markReadItem.style.display = 'flex';
+    markUnreadItem.style.display = 'flex';
+    editNameItem.style.display = 'none';
+    divider1.style.display = 'block';
+    moveSection.style.display = 'block';
+    divider2.style.display = 'block';
+    deleteGroupItem.style.display = 'flex';
+    deleteEmailItem.style.display = 'none';
+  }
 
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
@@ -748,6 +915,70 @@ async function contextEditName() {
     loadTree();
   } catch (err) {
     alert(__('Failed to update: {0}', err.message));
+  }
+}
+
+async function contextDeletedRestore() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target) return;
+
+  try {
+    if (target.type === 'email' && target.id) {
+      const result = await api(`/api/emails/${target.id}/restore`, { method: 'POST' });
+      if (!result.success) { alert(__('Failed to restore')); return; }
+    } else if (target.type === 'sender' && target.id) {
+      const result = await api(`/api/emails/deleted-group/${target.id}`, {
+        method: 'POST',
+        body: { action: 'restore' },
+      });
+      if (!result.success) { alert(__('Failed to restore')); return; }
+    }
+    showEmptyState();
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to restore: {0}', err.message));
+  }
+}
+
+async function contextDeletedClear() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target) return;
+
+  let title = __('Empty Deleted');
+  let msg = __('Permanently delete all emails in Deleted folder?');
+  if (target.type === 'sender') {
+    msg = __('Delete ALL emails in this group?');
+  } else if (target.type === 'email') {
+    msg = __('Delete this email permanently?');
+  }
+  const deleteServerChecked = document.getElementById('deleteServerCopy').checked;
+  if (deleteServerChecked) {
+    msg += '\n\n' + __('This will permanently delete the server copies as well.');
+    if (!(await showDialog({ title, message: msg }))) return;
+  } else {
+    if (!(await showDialog({ title, message: msg }))) return;
+  }
+
+  try {
+    if (target.type === 'folder' && target.id === 'deleted') {
+      const result = await api('/api/emails/clear-deleted', { method: 'POST' });
+      if (!result.success) { alert(__('Failed')); return; }
+    } else if (target.type === 'sender' && target.id) {
+      const result = await api(`/api/emails/deleted-group/${target.id}`, {
+        method: 'POST',
+        body: { action: 'clear' },
+      });
+      if (!result.success) { alert(__('Failed')); return; }
+    } else if (target.type === 'email' && target.id) {
+      const result = await api(`/api/emails/${target.id}`, { method: 'DELETE' });
+      if (!result.success) { alert(__('Failed')); return; }
+    }
+    showEmptyState();
+    loadTree();
+  } catch (err) {
+    alert(__('Failed: {0}', err.message));
   }
 }
 

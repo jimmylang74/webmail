@@ -17,6 +17,10 @@
           {{ T('Group by Server') }}
         </label>
         <span class="toolbar-sep"></span>
+        <label class="checkbox-label" title="{{ T('Also delete from server') }}">
+          <input type="checkbox" id="deleteServerCopy">
+          {{ T('Also delete from server') }}
+        </label>
         <button class="btn btn-sm btn-outline" onclick="toggleContactPanel()" id="toggleContactsBtn" title="{{ T('Show/Hide Contacts') }}">&#128101; {{ T('Contacts') }}</button>
         <button class="btn btn-sm btn-outline" onclick="showManageContacts()" title="{{ T('Manage Contacts') }}">&#9998; {{ T('Manage') }}</button>
         <span id="fetchStatus" class="fetch-status"></span>
@@ -174,6 +178,19 @@
         <div class="context-menu-item" id="ctxDeleteAll" onclick="contextDeleteAll()">
           <span class="ctx-icon">&#128465;</span>
           <span>{{ T('Delete All Emails in Group') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxDeleteEmail" onclick="contextDeleteEmail()">
+          <span class="ctx-icon">&#128465;</span>
+          <span>{{ T('Delete') }}</span>
+        </div>
+        <div class="context-menu-divider" id="ctxDeletedDivider1"></div>
+        <div class="context-menu-item" id="ctxDeletedRestore" onclick="contextDeletedRestore()">
+          <span class="ctx-icon">&#128259;</span>
+          <span>{{ T('Restore') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxDeletedClear" onclick="contextDeletedClear()">
+          <span class="ctx-icon">&#128465;</span>
+          <span>{{ T('Empty Deleted') }}</span>
         </div>
       </div>
     </div>

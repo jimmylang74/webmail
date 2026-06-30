@@ -1096,6 +1096,94 @@ def test_server_connection(server_config: dict) -> dict:
     return results
 
 
+def delete_from_server(server_config: dict, server_uid: str) -> dict:
+    """Delete a single email from the server by UID (IMAP) or UIDL (POP3).
+
+    * POP3: uses UIDL to locate the message number, then DELE.
+    * IMAP: uses UID STORE +FLAGS \\Deleted, then EXPUNGE.
+
+    Args:
+        server_config: email_servers row dict (must include incoming_server,
+                       incoming_port, incoming_protocol, username, password, use_ssl).
+        server_uid: The IMAP UID or POP3 UIDL of the message to delete.
+
+    Returns:
+        dict with "success" bool and optional "error" string.
+    """
+    protocol = server_config["incoming_protocol"].upper()
+
+    if protocol == "POP3":
+        try:
+            if server_config["use_ssl"]:
+                server = poplib.POP3_SSL(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 995,
+                    timeout=30,
+                )
+            else:
+                server = poplib.POP3(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 110,
+                    timeout=30,
+                )
+
+            server.user(server_config["username"])
+            server.pass_(server_config["password"])
+
+            # Get all UIDL lines, find the message number matching server_uid
+            uidl_resp = server.uidl()
+            msg_num = None
+            for line in uidl_resp[1]:
+                parts = line.decode().split()
+                if len(parts) >= 2 and parts[1] == server_uid:
+                    msg_num = int(parts[0])
+                    break
+
+            if msg_num is None:
+                server.quit()
+                return {"success": False, "error": f"UIDL {server_uid} not found on server"}
+
+            server.dele(msg_num)
+            server.quit()
+            return {"success": True}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif protocol == "IMAP":
+        try:
+            if server_config["use_ssl"]:
+                server = imaplib.IMAP4_SSL(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 993,
+                    timeout=30,
+                )
+            else:
+                server = imaplib.IMAP4(
+                    server_config["incoming_server"],
+                    server_config["incoming_port"] or 143,
+                    timeout=30,
+                )
+
+            _send_imap_id(server)
+            server.login(server_config["username"], server_config["password"])
+            server.select("INBOX")
+
+            # Mark the message as deleted by UID, then expunge
+            server.uid("STORE", server_uid, "+FLAGS", "\\Deleted")
+            server.expunge()
+
+            server.close()
+            server.logout()
+            return {"success": True}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    else:
+        return {"success": False, "error": f"Unsupported protocol: {protocol}"}
+
+
 def fetch_all_for_user(user_id: int) -> list:
     """Fetch emails from all configured servers for a user."""
     conn = get_user_db(user_id)

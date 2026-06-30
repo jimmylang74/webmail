@@ -204,5 +204,15 @@
   "Restore": "恢复",
   "Restore Email": "恢复邮件",
   "Move this email back to its original folder?": "将此邮件恢复到原文件夹？",
-  "Failed to restore: {0}": "恢复失败：{0}"
+  "Failed to restore: {0}": "恢复失败：{0}",
+
+  "Also delete from server": "同时删除服务器上的备份",
+  "Deleted the email from server": "已从服务器删除该邮件",
+  "Failed to delete from server: {0}": "从服务器删除失败：{0}",
+  "Empty Deleted": "清空",
+  "Permanently delete all emails in Deleted folder?": "确定要永久删除所有已删除的邮件吗？",
+  "Deleted folder emptied": "已清空已删除文件夹",
+  "This will permanently delete the server copies as well.": "这将同步删除服务器上的备份邮件。",
+  "This will permanently delete the email from the database.": "此操作将从此数据库中彻底删除邮件。",
+  "Delete this email permanently?": "永久删除此邮件？"
 }

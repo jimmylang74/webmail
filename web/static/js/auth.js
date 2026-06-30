@@ -32,6 +32,7 @@ function showDialog(options) {
     if (options.message) {
       // Confirm mode
       const p = document.createElement('p');
+      p.style.whiteSpace = 'pre-wrap';
       p.textContent = options.message;
       body.appendChild(p);
     } else {

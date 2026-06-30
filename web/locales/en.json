@@ -46,8 +46,21 @@
   "Numbered List": "Numbered List",
   "Insert Link": "Insert Link",
   "Enter link URL:": "Enter link URL:",
+  "Delete": "Delete",
+  "Delete All": "Delete All",
+  "Delete ALL emails in this group?": "Delete ALL emails in this group?",
   "Restore": "Restore",
   "Restore Email": "Restore Email",
   "Move this email back to its original folder?": "Move this email back to its original folder?",
-  "Failed to restore: {0}": "Failed to restore: {0}"
+  "Failed to restore: {0}": "Failed to restore: {0}",
+
+  "Also delete from server": "Also delete from server",
+  "Deleted the email from server": "Deleted the email from server",
+  "Failed to delete from server: {0}": "Failed to delete from server: {0}",
+  "Empty Deleted": "Empty Deleted",
+  "Permanently delete all emails in Deleted folder?": "Permanently delete all emails in Deleted folder?",
+  "Deleted folder emptied": "Deleted folder emptied",
+  "This will permanently delete the server copies as well.": "This will permanently delete the server copies as well.",
+  "This will permanently delete the email from the database.": "This will permanently delete the email from the database.",
+  "Delete this email permanently?": "Delete this email permanently?"
 }

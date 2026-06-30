@@ -40,7 +40,7 @@ from modules.email_classify import (
     auto_classify_senders,
     classify_unclassified_emails,
 )
-from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, test_server_connection, check_imap_capabilities, download_all_emails
+from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, test_server_connection, check_imap_capabilities, download_all_emails, delete_from_server
 from modules.email_send import save_draft, send_email
 from modules.forward import (
     create_forward_rule,
@@ -748,6 +748,7 @@ def api_mailbox_tree():
                 "id": f"{folder_name}_{em['id']}",
                 "name": em["subject"] or "(No Subject)",
                 "email_id": em["id"],
+                "folder": folder_name,
                 "sender": em["sender"],
                 "sender_name": em["sender_name"],
                 "is_read": em["is_read"],
@@ -779,6 +780,7 @@ def api_mailbox_tree():
                     "id": f"{folder_name}_{em['id']}",
                     "name": em["subject"] or "(No Subject)",
                     "email_id": em["id"],
+                    "folder": folder_name,
                     "sender": em["sender"],
                     "sender_name": em["sender_name"],
                     "is_read": em["is_read"],
@@ -792,6 +794,7 @@ def api_mailbox_tree():
                 "id": f"{folder_name}_sg_{sg['id']}",
                 "name": sg["group_name"],
                 "email": sg["sender_email"],
+                "folder": folder_name,
                 "icon": "user",
                 "count": sg["cnt"],
                 "sender_group_id": sg["id"],
@@ -808,6 +811,7 @@ def api_mailbox_tree():
                 "id": f"{folder_name}_{em['id']}",
                 "name": em["subject"] or "(No Subject)",
                 "email_id": em["id"],
+                "folder": folder_name,
                 "sender": em["sender"],
                 "sender_name": em["sender_name"],
                 "is_read": em["is_read"],
@@ -944,13 +948,42 @@ def api_move_email(email_id):
 
     conn.commit()
     ok = cursor.rowcount > 0
+
+    # If moving to deleted AND user wants server-side deletion
+    delete_server_result = None
+    if ok and folder == "deleted":
+        delete_from_server_flag = data.get("delete_from_server", False)
+        if delete_from_server_flag:
+            # Look up the email's server info and UID
+            cursor.execute(
+                "SELECT e.server_id, e.server_uid, es.incoming_protocol, es.incoming_server, "
+                "es.incoming_port, es.username, es.password, es.use_ssl "
+                "FROM emails e LEFT JOIN email_servers es ON e.server_id = es.id "
+                "WHERE e.id=? AND e.user_id=?",
+                (email_id, session["user_id"]),
+            )
+            email_info = cursor.fetchone()
+            if email_info and email_info["server_uid"] and email_info["incoming_server"]:
+                server_config = {
+                    "incoming_protocol": email_info["incoming_protocol"],
+                    "incoming_server": email_info["incoming_server"],
+                    "incoming_port": email_info["incoming_port"],
+                    "username": email_info["username"],
+                    "password": email_info["password"],
+                    "use_ssl": email_info["use_ssl"],
+                }
+                delete_server_result = delete_from_server(server_config, email_info["server_uid"])
+
     conn.close()
 
     if ok and folder == "deleted":
         # Process forward rules before marking deleted
         process_forward_rules(session["user_id"], email_id)
 
-    return jsonify({"success": ok})
+    response = {"success": ok}
+    if delete_server_result is not None:
+        response["delete_from_server"] = delete_server_result
+    return jsonify(response)
 
 
 @app.route("/api/emails/<int:email_id>/restore", methods=["POST"])
@@ -1069,33 +1102,173 @@ def api_delete_email(email_id):
 @app.route("/api/emails/group/<int:sender_group_id>", methods=["DELETE"])
 @login_required
 def api_delete_group_emails(sender_group_id):
-    """Move all emails in a sender group to trash."""
+    """Move all emails in a sender group to trash.
+
+    Query param: delete_from_server=1  — also delete from server for each email.
+    """
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, server_id, server_uid, folder FROM emails WHERE sender_group_id=? AND user_id=?",
+        (sender_group_id, session["user_id"]),
+    )
+    rows = cursor.fetchall()
+
     cursor.execute(
         "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=?",
         (sender_group_id, session["user_id"]),
     )
     conn.commit()
     deleted = cursor.rowcount
+
+    server_results = []
+    delete_from_server_flag = request.args.get("delete_from_server", "0") == "1"
+    if delete_from_server_flag:
+        for row in rows:
+            if row["folder"] == "drafts":
+                continue
+            if row["server_uid"] and row["server_id"]:
+                cursor.execute(
+                    "SELECT incoming_protocol, incoming_server, incoming_port, username, password, use_ssl "
+                    "FROM email_servers WHERE id=? AND user_id=?",
+                    (row["server_id"], session["user_id"]),
+                )
+                srv = cursor.fetchone()
+                if srv and srv["incoming_server"]:
+                    sc = {
+                        "incoming_protocol": srv["incoming_protocol"],
+                        "incoming_server": srv["incoming_server"],
+                        "incoming_port": srv["incoming_port"],
+                        "username": srv["username"],
+                        "password": srv["password"],
+                        "use_ssl": srv["use_ssl"],
+                    }
+                    server_results.append({
+                        "email_id": row["id"],
+                        "result": delete_from_server(sc, row["server_uid"]),
+                    })
+
     conn.close()
-    return jsonify({"success": True, "deleted": deleted})
+    resp = {"success": True, "deleted": deleted}
+    if server_results:
+        resp["server_results"] = server_results
+    return jsonify(resp)
 
 
 @app.route("/api/emails/group/importance/<int:imp_group_id>", methods=["DELETE"])
 @login_required
 def api_delete_importance_group_emails(imp_group_id):
-    """Move all emails in an importance group to trash."""
+    """Move all emails in an importance group to trash.
+
+    Query param: delete_from_server=1  — also delete from server for each email.
+    """
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, server_id, server_uid FROM emails WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
+        (imp_group_id, session["user_id"]),
+    )
+    rows = cursor.fetchall()
+
     cursor.execute(
         "UPDATE emails SET folder='deleted' WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
         (imp_group_id, session["user_id"]),
     )
     conn.commit()
     deleted = cursor.rowcount
+
+    server_results = []
+    delete_from_server_flag = request.args.get("delete_from_server", "0") == "1"
+    if delete_from_server_flag:
+        for row in rows:
+            if row["server_uid"] and row["server_id"]:
+                cursor.execute(
+                    "SELECT incoming_protocol, incoming_server, incoming_port, username, password, use_ssl "
+                    "FROM email_servers WHERE id=? AND user_id=?",
+                    (row["server_id"], session["user_id"]),
+                )
+                srv = cursor.fetchone()
+                if srv and srv["incoming_server"]:
+                    sc = {
+                        "incoming_protocol": srv["incoming_protocol"],
+                        "incoming_server": srv["incoming_server"],
+                        "incoming_port": srv["incoming_port"],
+                        "username": srv["username"],
+                        "password": srv["password"],
+                        "use_ssl": srv["use_ssl"],
+                    }
+                    server_results.append({
+                        "email_id": row["id"],
+                        "result": delete_from_server(sc, row["server_uid"]),
+                    })
+
+    conn.close()
+    resp = {"success": True, "deleted": deleted}
+    if server_results:
+        resp["server_results"] = server_results
+    return jsonify(resp)
+
+
+@app.route("/api/emails/clear-deleted", methods=["POST"])
+@login_required
+def api_clear_deleted():
+    """Permanently delete ALL emails in the Deleted folder."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM emails WHERE user_id=? AND folder='deleted'",
+        (session["user_id"],),
+    )
+    conn.commit()
+    deleted = cursor.rowcount
     conn.close()
     return jsonify({"success": True, "deleted": deleted})
+
+
+@app.route("/api/emails/deleted-group/<int:sender_group_id>", methods=["POST"])
+@login_required
+@json_body
+def api_deleted_group_action(sender_group_id):
+    """Bulk action on all emails of a sender group inside the Deleted folder.
+
+    JSON body: {"action": "restore"} — restore all to original folder.
+               {"action": "clear"}   — permanently delete from DB.
+    """
+    data = request.get_json()
+    action = data.get("action", "")
+    user_id = session["user_id"]
+    conn = get_user_db(user_id)
+    cursor = conn.cursor()
+
+    if action == "restore":
+        # Restore each email to its original_folder
+        cursor.execute(
+            "SELECT id, original_folder FROM emails WHERE user_id=? AND sender_group_id=? AND folder='deleted'",
+            (user_id, sender_group_id),
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            target = row["original_folder"] if row["original_folder"] in ("inbox", "outbox", "drafts") else "inbox"
+            cursor.execute(
+                "UPDATE emails SET folder=?, original_folder=NULL WHERE id=? AND user_id=?",
+                (target, row["id"], user_id),
+            )
+        affected = len(rows)
+    elif action == "clear":
+        cursor.execute(
+            "DELETE FROM emails WHERE user_id=? AND sender_group_id=? AND folder='deleted'",
+            (user_id, sender_group_id),
+        )
+        affected = cursor.rowcount
+    else:
+        conn.close()
+        return jsonify({"error": "Invalid action"}), 400
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "affected": affected})
 
 
 @app.route("/api/emails/<int:email_id>/move-importance", methods=["POST"])
