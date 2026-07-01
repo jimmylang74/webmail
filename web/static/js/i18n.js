@@ -7,7 +7,7 @@
 function __(key) {
   if (!window._LOCALE) return key;
   let s = window._LOCALE[key];
-  if (s === undefined) return key;
+  if (s === undefined) s = key;
   // Positional replacement: __('Hello {0}', name)
   for (let i = 1; i < arguments.length; i++) {
     const re = new RegExp('\\{' + (i - 1) + '\\}', 'g');
