@@ -159,6 +159,30 @@
           <span class="ctx-icon">&#9998;</span>
           <span>{{ T('Edit Name') }}</span>
         </div>
+        <div class="context-menu-item" id="ctxRenameFolder" onclick="contextRenameFolder()">
+          <span class="ctx-icon">&#9998;</span>
+          <span>{{ T('Rename Folder') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxDeleteFolder" onclick="contextDeleteFolder()">
+          <span class="ctx-icon">&#128465;</span>
+          <span>{{ T('Delete Folder') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxAddFolder" onclick="contextAddFolder()">
+          <span class="ctx-icon">&#128193;</span>
+          <span>{{ T('Add Folder') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxAddImpGroup" onclick="contextAddImpGroup()">
+          <span class="ctx-icon">&#128193;</span>
+          <span>{{ T('Add Group') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxRenameImpGroup" onclick="contextRenameImpGroup()">
+          <span class="ctx-icon">&#9998;</span>
+          <span>{{ T('Rename Group') }}</span>
+        </div>
+        <div class="context-menu-item" id="ctxDeleteImpGroup" onclick="contextDeleteImpGroup()">
+          <span class="ctx-icon">&#128465;</span>
+          <span>{{ T('Delete Group') }}</span>
+        </div>
         <div class="context-menu-item" id="ctxAddContact" onclick="contextAddSenderToContact()">
           <span class="ctx-icon">&#128101;</span>
           <span>{{ T('Add Sender to Contacts') }}</span>

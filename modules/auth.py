@@ -135,7 +135,7 @@ def get_importance_groups(user_id: int):
     conn = get_user_db(user_id)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, name, sort_order FROM importance_groups WHERE user_id = ? ORDER BY sort_order",
+        "SELECT id, name, sort_order, is_system FROM importance_groups WHERE user_id = ? ORDER BY sort_order",
         (user_id,),
     )
     rows = cursor.fetchall()

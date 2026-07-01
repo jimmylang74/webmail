@@ -5,9 +5,10 @@ let currentState = {
   currentSenderGroupId: null,
   currentImpGroupId: null,
   currentFolder: 'inbox',
+  currentFolderId: null,
 };
 let allServers = [];
-let contextMenuTarget = null; // {type: 'imp'|'sender', id: int, serverId: int|null}
+let contextMenuTarget = null;
 
 // Tree state preservation
 let expandedNodeIds = new Set();
@@ -158,6 +159,7 @@ function createTreeItem(node, depth) {
   const isImpGroup = node.imp_group_id != null && !node.sender_group_id;
   const isSenderGroup = node.sender_group_id != null;
   const isEmail = node.type === 'email';
+  const isCustomFolder = !!node.is_custom_folder;
   const hasChildren = node.children && node.children.length > 0;
 
   // Main item row
@@ -286,11 +288,15 @@ function createTreeItem(node, depth) {
 	        currentState.currentImpGroupId = node.imp_group_id;
 	        currentState.currentFolder = 'inbox';
 	      }
-	    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
-	      // Click on root folder with no children → show empty state
-	      // (folders with children are handled by the hasChildren branch above)
-	      showEmptyState();
-	    } else if (node.id) {
+    } else if (node.is_custom_folder) {
+      currentState.currentFolderId = node.folder_id;
+      currentState.currentFolder = node.name;
+      showEmptyState();
+    } else if (node.id === 'inbox' || node.id === 'outbox' || node.id === 'drafts' || node.id === 'deleted') {
+      // Click on root folder with no children → show empty state
+      // (folders with children are handled by the hasChildren branch above)
+      showEmptyState();
+    } else if (node.id) {
 	      // Any other leaf node
 	      showEmptyState();
 	    }
@@ -301,10 +307,10 @@ function createTreeItem(node, depth) {
     e.preventDefault();
     e.stopPropagation();
     if (isEmail) {
-      contextMenuTarget = {type: 'email', id: node.email_id, folder: node.folder, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null, isRead: !!node.is_read};
+      contextMenuTarget = {type: 'email', id: node.email_id, folder: node.folder, folderId: node.folder_id, impGroupId: node.imp_group_id, senderGroupId: node.sender_group_id, serverId: node.server_id || null, isRead: !!node.is_read};
       showContextMenu(e.clientX, e.clientY);
     } else if (isImpGroup) {
-      contextMenuTarget = {type: 'imp', id: node.imp_group_id, serverId: node.server_id || null};
+      contextMenuTarget = {type: 'imp', id: node.imp_group_id, serverId: node.server_id || null, isSystem: !!node.is_system};
       showContextMenu(e.clientX, e.clientY);
     } else if (isSenderGroup) {
       contextMenuTarget = {type: 'sender', id: node.sender_group_id, folder: node.folder, impGroupId: node.imp_group_id, serverId: node.server_id || null};
@@ -319,6 +325,9 @@ function createTreeItem(node, depth) {
     } else if (node.id === 'deleted') {
       contextMenuTarget = {type: 'folder', id: 'deleted'};
       showContextMenu(e.clientX, e.clientY);
+    } else if (node.is_custom_folder) {
+      contextMenuTarget = {type: 'custom_folder', id: node.id, folder_id: node.folder_id, name: node.name};
+      showContextMenu(e.clientX, e.clientY);
     }
   });
 
@@ -331,6 +340,7 @@ function createTreeItem(node, depth) {
         e.dataTransfer.setData('text/plain', JSON.stringify({
           type: 'email',
           emailId: node.email_id,
+          folderId: node.folder_id,
           impGroupId: node.imp_group_id,
         }));
       } else if (isSenderGroup) {
@@ -374,6 +384,39 @@ function createTreeItem(node, depth) {
           moveSenderGroupImportance(data.senderGroupId, impGroupId);
         }
       } catch (_) {}
+    });
+  }
+
+  if (isCustomFolder) {
+    main.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      main.classList.add('drag-over');
+    });
+    main.addEventListener('dragleave', (e) => {
+      e.stopPropagation();
+      main.classList.remove('drag-over');
+    });
+    main.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      main.classList.remove('drag-over');
+      const raw = e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      try {
+        const data = JSON.parse(raw);
+        const folderId = node.folder_id;
+        if (data.type === 'email' && data.emailId) {
+          await api(`/api/emails/${data.emailId}/move`, {
+            method: 'POST',
+            body: { folder_id: folderId },
+          });
+          loadTree();
+        }
+      } catch (err) {
+        alert(__('Failed to move: {0}', err.message));
+      }
     });
   }
 
@@ -741,7 +784,9 @@ function invalidateImpGroupCache() {
 function _hideAllContextItems() {
   const ids = ['ctxMarkRead', 'ctxMarkUnread', 'ctxEditName', 'ctxAddContact',
     'ctxDivider1', 'ctxMoveSection', 'ctxDivider2', 'ctxDeleteAll', 'ctxDeleteEmail',
-    'ctxDeletedDivider1', 'ctxDeletedRestore', 'ctxDeletedClear'];
+    'ctxDeletedDivider1', 'ctxDeletedRestore', 'ctxDeletedClear',
+    'ctxRenameFolder', 'ctxDeleteFolder', 'ctxAddFolder',
+    'ctxAddImpGroup', 'ctxRenameImpGroup', 'ctxDeleteImpGroup'];
   ids.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -761,22 +806,88 @@ function showContextMenu(x, y) {
   const isDeleted = target.folder === 'deleted' || target.id === 'deleted';
 
   if (!isDeleted) {
-    getImpGroups().then(groups => {
-      groups.forEach(g => {
-        if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
-        const item = document.createElement('div');
-        item.className = 'context-menu-item submenu-item';
-        item.textContent = g.name;
-        const impGroupId = g.id;
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const savedTarget = contextMenuTarget;
-          hideContextMenu();
-          if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
-        });
-        moveSubmenu.appendChild(item);
+    const inCustomFolder = (target.type === 'email' && target.folderId) ||
+                           (target.type === 'sender' && target.folder && target.folder !== 'inbox' && target.folder !== 'deleted');
+
+    if (inCustomFolder) {
+      const item = document.createElement('div');
+      item.className = 'context-menu-item submenu-item';
+      item.textContent = 'Inbox';
+      item.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const savedTarget = contextMenuTarget;
+        hideContextMenu();
+        if (!savedTarget) return;
+        try {
+          if (savedTarget.type === 'email' && savedTarget.id) {
+            await api(`/api/emails/${savedTarget.id}/move`, {
+              method: 'POST',
+              body: { folder: 'inbox' },
+            });
+          } else if (savedTarget.type === 'sender' && savedTarget.id) {
+            await api(`/api/emails/group/${savedTarget.id}/move`, {
+              method: 'POST',
+              body: { folder: 'inbox' },
+            });
+          }
+          loadTree();
+        } catch (err) {
+          alert(__('Failed to move: {0}', err.message));
+        }
       });
-    });
+      moveSubmenu.appendChild(item);
+    } else {
+      getImpGroups().then(groups => {
+        groups.forEach(g => {
+          if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
+          const item = document.createElement('div');
+          item.className = 'context-menu-item submenu-item';
+          item.textContent = g.name;
+          const impGroupId = g.id;
+          item.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const savedTarget = contextMenuTarget;
+            hideContextMenu();
+            if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
+          });
+          moveSubmenu.appendChild(item);
+        });
+      });
+
+      api('/api/folders').then(data => {
+        const folders = data.folders || [];
+        folders.forEach(f => {
+          if (f.is_system) return;
+          const item = document.createElement('div');
+          item.className = 'context-menu-item submenu-item';
+          item.textContent = f.name;
+          const folderId = f.id;
+          item.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const savedTarget = contextMenuTarget;
+            hideContextMenu();
+            if (!savedTarget) return;
+            try {
+              if (savedTarget.type === 'email' && savedTarget.id) {
+                await api(`/api/emails/${savedTarget.id}/move`, {
+                  method: 'POST',
+                  body: { folder_id: folderId },
+                });
+              } else if (savedTarget.type === 'sender' && savedTarget.id) {
+                await api(`/api/emails/group/${savedTarget.id}/move`, {
+                  method: 'POST',
+                  body: { folder_id: folderId },
+                });
+              }
+              loadTree();
+            } catch (err) {
+              alert(__('Failed to move: {0}', err.message));
+            }
+          });
+          moveSubmenu.appendChild(item);
+        });
+      });
+    }
   }
 
   const markReadItem = document.getElementById('ctxMarkRead');
@@ -816,11 +927,48 @@ function showContextMenu(x, y) {
     markReadItem.style.display = 'flex';
     markUnreadItem.style.display = 'flex';
     editNameItem.style.display = 'none';
+    divider1.style.display = 'block';
+    moveSection.style.display = 'none';
+    divider2.style.display = 'none';
+    deleteGroupItem.style.display = 'none';
+    deleteEmailItem.style.display = 'none';
+    const addImpGroupItem = document.getElementById('ctxAddImpGroup');
+    if (addImpGroupItem && (target.id === 'inbox' || target.serverId)) {
+      addImpGroupItem.style.display = 'flex';
+    }
+  } else if (target.type === 'custom_folder') {
+    markReadItem.style.display = 'none';
+    markUnreadItem.style.display = 'none';
+    editNameItem.style.display = 'none';
+    divider1.style.display = 'none';
+    moveSection.style.display = 'none';
+    divider2.style.display = 'block';
+    deleteGroupItem.style.display = 'none';
+    deleteEmailItem.style.display = 'none';
+    const renameItem = document.getElementById('ctxRenameFolder');
+    const deleteItem = document.getElementById('ctxDeleteFolder');
+    if (renameItem) renameItem.style.display = 'flex';
+    if (deleteItem) deleteItem.style.display = 'flex';
+  } else if (target.type === 'imp') {
+    markReadItem.style.display = 'flex';
+    markUnreadItem.style.display = 'flex';
+    editNameItem.style.display = 'none';
     divider1.style.display = 'none';
     moveSection.style.display = 'none';
     divider2.style.display = 'none';
     deleteGroupItem.style.display = 'none';
     deleteEmailItem.style.display = 'none';
+    if (!target.isSystem) {
+      const renameImpItem = document.getElementById('ctxRenameImpGroup');
+      const deleteImpItem = document.getElementById('ctxDeleteImpGroup');
+      if (renameImpItem) renameImpItem.style.display = 'flex';
+      if (deleteImpItem) deleteImpItem.style.display = 'flex';
+    }
+  } else if (target.type === 'blank_area') {
+    const addFolderItem = document.getElementById('ctxAddFolder');
+    const addImpGroupItem = document.getElementById('ctxAddImpGroup');
+    if (addFolderItem) addFolderItem.style.display = 'flex';
+    if (addImpGroupItem) addImpGroupItem.style.display = 'flex';
   } else if (target.type === 'sender') {
     markReadItem.style.display = 'flex';
     markUnreadItem.style.display = 'flex';
@@ -1067,6 +1215,132 @@ document.addEventListener('click', (e) => {
     hideContextMenu();
   }
 });
+
+// ---- Right-click on blank tree area → "Add Folder" ----
+document.getElementById('treeMenu').addEventListener('contextmenu', (e) => {
+  if (e.target === document.getElementById('treeMenu') || e.target.closest('.tree-menu')) {
+    const clickedItem = e.target.closest('.tree-item');
+    if (!clickedItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      contextMenuTarget = {type: 'blank_area'};
+      showContextMenu(e.clientX, e.clientY);
+    }
+  }
+});
+
+// ---- Folder CRUD context menu handlers ----
+async function contextAddFolder() {
+  hideContextMenu();
+  const result = await showDialog({ title: __('New Folder') });
+  if (result === null) return;
+  const trimmed = result.trim();
+  if (!trimmed) return;
+
+  try {
+    await api('/api/folders', {
+      method: 'POST',
+      body: { name: trimmed },
+    });
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to create folder: {0}', err.message));
+  }
+}
+
+async function contextRenameFolder() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target || target.type !== 'custom_folder') return;
+
+  const currentName = target.name || '';
+  const result = await showDialog({ title: __('Rename Folder') });
+  if (result === null) return;
+  const trimmed = result.trim();
+  if (!trimmed) return;
+
+  try {
+    await api(`/api/folders/${target.folder_id}`, {
+      method: 'PUT',
+      body: { name: trimmed },
+    });
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to rename folder: {0}', err.message));
+  }
+}
+
+async function contextDeleteFolder() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target || target.type !== 'custom_folder') return;
+
+  try {
+    await api(`/api/folders/${target.folder_id}`, {
+      method: 'DELETE',
+    });
+    loadTree();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function contextAddImpGroup() {
+  hideContextMenu();
+  const result = await showDialog({ title: __('New Group') });
+  if (result === null) return;
+  const trimmed = result.trim();
+  if (!trimmed) return;
+
+  try {
+    await api('/api/groups/importance', {
+      method: 'POST',
+      body: { name: trimmed },
+    });
+    invalidateImpGroupCache();
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to create group: {0}', err.message));
+  }
+}
+
+async function contextRenameImpGroup() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target || target.type !== 'imp' || target.isSystem) return;
+
+  const result = await showDialog({ title: __('Rename Group') });
+  if (result === null) return;
+  const trimmed = result.trim();
+  if (!trimmed) return;
+
+  try {
+    await api(`/api/groups/importance/${target.id}`, {
+      method: 'PUT',
+      body: { name: trimmed },
+    });
+    invalidateImpGroupCache();
+    loadTree();
+  } catch (err) {
+    alert(__('Failed to rename group: {0}', err.message));
+  }
+}
+
+async function contextDeleteImpGroup() {
+  const target = contextMenuTarget;
+  hideContextMenu();
+  if (!target || target.type !== 'imp' || target.isSystem) return;
+
+  try {
+    await api(`/api/groups/importance/${target.id}`, {
+      method: 'DELETE',
+    });
+    invalidateImpGroupCache();
+    loadTree();
+  } catch (err) {
+    alert(err.message);
+  }
+}
 
 // ===== HTML Editor =====
 let editorMode = 'richtext'; // 'richtext' | 'plain'

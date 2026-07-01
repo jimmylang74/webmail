@@ -135,6 +135,18 @@ def _folder_stats(user_id: int):
         (user_id,),
     )
     stats["unread"] = cursor.fetchone()[0]
+    # Custom folder counts
+    cursor.execute(
+        "SELECT id, name FROM folders WHERE user_id=? AND is_system=0 ORDER BY sort_order, name",
+        (user_id,),
+    )
+    stats["custom_folders"] = [dict(r) for r in cursor.fetchall()]
+    for cf in stats["custom_folders"]:
+        cursor.execute(
+            "SELECT COUNT(*) FROM emails WHERE user_id=? AND folder_id=?",
+            (user_id, cf["id"]),
+        )
+        cf["count"] = cursor.fetchone()[0]
     conn.close()
     return stats
 
@@ -620,6 +632,7 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
             "count": imp_count,
             "unread": imp_unread,
             "imp_group_id": ig["id"],
+            "is_system": ig.get("is_system", 0),
             "children": [],
         }
         if server_id:
@@ -830,6 +843,93 @@ def api_mailbox_tree():
          "children": _folder_sender_group_children(cursor, "deleted")},
     ])
 
+    # Custom folders
+    cursor.execute(
+        "SELECT id, name, icon, sort_order FROM folders WHERE user_id=? AND is_system=0 ORDER BY sort_order, name",
+        (user_id,),
+    )
+    for cf in cursor.fetchall():
+        cursor.execute(
+            "SELECT COUNT(*) FROM emails WHERE user_id=? AND folder_id=?",
+            (user_id, cf["id"]),
+        )
+        cf_count = cursor.fetchone()[0]
+        children = []
+        if cf_count > 0:
+            cursor.execute(
+                "SELECT sg.id, sg.group_name, sg.sender_email, COUNT(*) as cnt "
+                "FROM emails e JOIN sender_groups sg ON e.sender_group_id = sg.id "
+                "WHERE e.user_id=? AND e.folder_id=? "
+                "GROUP BY sg.id ORDER BY sg.group_name",
+                (user_id, cf["id"]),
+            )
+            for sg in cursor.fetchall():
+                cursor.execute(
+                    "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, importance_group_id "
+                    "FROM emails WHERE user_id=? AND folder_id=? AND sender_group_id=? "
+                    "ORDER BY received_date DESC LIMIT 50",
+                    (user_id, cf["id"], sg["id"]),
+                )
+                email_children = [
+                    {
+                        "id": f"cf_{cf['id']}_{em['id']}",
+                        "name": em["subject"] or "(No Subject)",
+                        "email_id": em["id"],
+                        "folder": cf["name"],
+                        "folder_id": cf["id"],
+                        "sender": em["sender"],
+                        "sender_name": em["sender_name"],
+                        "is_read": em["is_read"],
+                        "received_date": em["received_date"],
+                        "server_badge": em["server_badge"],
+                        "imp_group_id": em["importance_group_id"],
+                        "sender_group_id": sg["id"],
+                        "type": "email",
+                    }
+                    for em in cursor.fetchall()
+                ]
+                children.append({
+                    "id": f"cf_{cf['id']}_sg_{sg['id']}",
+                    "name": sg["group_name"],
+                    "email": sg["sender_email"],
+                    "folder": cf["name"],
+                    "folder_id": cf["id"],
+                    "icon": "user",
+                    "count": sg["cnt"],
+                    "sender_group_id": sg["id"],
+                    "children": email_children,
+                })
+            cursor.execute(
+                "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, importance_group_id "
+                "FROM emails WHERE user_id=? AND folder_id=? AND sender_group_id IS NULL "
+                "ORDER BY received_date DESC LIMIT 50",
+                (user_id, cf["id"]),
+            )
+            for em in cursor.fetchall():
+                children.append({
+                    "id": f"cf_{cf['id']}_{em['id']}",
+                    "name": em["subject"] or "(No Subject)",
+                    "email_id": em["id"],
+                    "folder": cf["name"],
+                    "folder_id": cf["id"],
+                    "sender": em["sender"],
+                    "sender_name": em["sender_name"],
+                    "is_read": em["is_read"],
+                    "received_date": em["received_date"],
+                    "server_badge": em["server_badge"],
+                    "imp_group_id": em["importance_group_id"],
+                    "type": "email",
+                })
+        folders.append({
+            "id": f"cf_{cf['id']}",
+            "name": cf["name"],
+            "icon": cf["icon"] or "folder",
+            "count": cf_count,
+            "folder_id": cf["id"],
+            "is_custom_folder": True,
+            "children": children,
+        })
+
     conn.close()
     return jsonify({"folders": folders})
 
@@ -840,6 +940,7 @@ def api_get_emails():
     """Get emails with filtering."""
     user_id = session["user_id"]
     folder = request.args.get("folder", "inbox")
+    folder_id = request.args.get("folder_id", type=int)
     imp_group_id = request.args.get("imp_group_id", type=int)
     sender_group_id = request.args.get("sender_group_id", type=int)
     server_id = request.args.get("server_id", type=int)
@@ -847,8 +948,14 @@ def api_get_emails():
     per_page = request.args.get("per_page", 50, type=int)
     search = request.args.get("search", "").strip()
 
-    params = [user_id, folder]
-    where_clauses = ["user_id = ?", "folder = ?"]
+    params = [user_id]
+    where_clauses = ["user_id = ?"]
+    if folder_id:
+        where_clauses.append("folder_id = ?")
+        params.append(folder_id)
+    else:
+        where_clauses.append("folder = ?")
+        params.append(folder)
 
     if imp_group_id:
         where_clauses.append("importance_group_id = ?")
@@ -927,24 +1034,52 @@ def api_move_email(email_id):
     """Move email to a different folder."""
     data = request.get_json()
     folder = data.get("folder", "")
-    if folder not in ("inbox", "outbox", "drafts", "deleted"):
-        return jsonify({"error": "Invalid folder"}), 400
+    folder_id = data.get("folder_id")
+    if folder_id is not None:
+        folder_id = int(folder_id)
 
-    conn = get_user_db(session["user_id"])
-    cursor = conn.cursor()
-
-    if folder == "deleted":
-        # Save original folder before overwriting (only on first deletion)
+    if folder_id:
+        conn = get_user_db(session["user_id"])
+        cursor = conn.cursor()
         cursor.execute(
-            "UPDATE emails SET original_folder = CASE WHEN original_folder IS NULL THEN folder ELSE original_folder END, "
-            "folder=? WHERE id=? AND user_id=?",
-            (folder, email_id, session["user_id"]),
+            "SELECT id, name, is_system FROM folders WHERE id=? AND user_id=?",
+            (folder_id, session["user_id"]),
         )
+        f = cursor.fetchone()
+        if not f:
+            conn.close()
+            return jsonify({"error": "Folder not found"}), 404
+        folder = f["name"]
+        cursor.execute(
+            "UPDATE emails SET folder_id=?, folder=? WHERE id=? AND user_id=?",
+            (folder_id, folder, email_id, session["user_id"]),
+        )
+    elif folder:
+        if folder not in ("inbox", "outbox", "drafts", "deleted"):
+            return jsonify({"error": "Invalid folder"}), 400
+        conn = get_user_db(session["user_id"])
+        cursor = conn.cursor()
+        # Resolve folder_id for system folders
+        cursor.execute(
+            "SELECT id FROM folders WHERE user_id=? AND name=? AND is_system=1",
+            (session["user_id"], folder),
+        )
+        sys_folder = cursor.fetchone()
+        sys_folder_id = sys_folder["id"] if sys_folder else None
+
+        if folder == "deleted":
+            cursor.execute(
+                "UPDATE emails SET original_folder = CASE WHEN original_folder IS NULL THEN folder ELSE original_folder END, "
+                "folder_id=?, folder=? WHERE id=? AND user_id=?",
+                (sys_folder_id, folder, email_id, session["user_id"]),
+            )
+        else:
+            cursor.execute(
+                "UPDATE emails SET folder_id=?, folder=? WHERE id=? AND user_id=?",
+                (sys_folder_id, folder, email_id, session["user_id"]),
+            )
     else:
-        cursor.execute(
-            "UPDATE emails SET folder=? WHERE id=? AND user_id=?",
-            (folder, email_id, session["user_id"]),
-        )
+        return jsonify({"error": "folder or folder_id required"}), 400
 
     conn.commit()
     ok = cursor.rowcount > 0
@@ -1156,6 +1291,55 @@ def api_delete_group_emails(sender_group_id):
     return jsonify(resp)
 
 
+@app.route("/api/emails/group/<int:sender_group_id>/move", methods=["POST"])
+@login_required
+@json_body
+def api_move_group_to_folder(sender_group_id):
+    data = request.get_json()
+    folder = data.get("folder", "")
+    folder_id = data.get("folder_id")
+
+    if folder_id:
+        folder_id = int(folder_id)
+        conn = get_user_db(session["user_id"])
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM folders WHERE id=? AND user_id=?",
+            (folder_id, session["user_id"]),
+        )
+        f = cursor.fetchone()
+        if not f:
+            conn.close()
+            return jsonify({"error": "Folder not found"}), 404
+        folder = f["name"]
+        cursor.execute(
+            "UPDATE emails SET folder=?, folder_id=? WHERE sender_group_id=? AND user_id=?",
+            (folder, folder_id, sender_group_id, session["user_id"]),
+        )
+    elif folder:
+        if folder not in ("inbox", "outbox", "drafts"):
+            return jsonify({"error": "Invalid folder"}), 400
+        conn = get_user_db(session["user_id"])
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM folders WHERE user_id=? AND name=? AND is_system=1",
+            (session["user_id"], folder),
+        )
+        sys_folder = cursor.fetchone()
+        sys_folder_id = sys_folder["id"] if sys_folder else None
+        cursor.execute(
+            "UPDATE emails SET folder=?, folder_id=? WHERE sender_group_id=? AND user_id=?",
+            (folder, sys_folder_id, sender_group_id, session["user_id"]),
+        )
+    else:
+        return jsonify({"error": "folder or folder_id required"}), 400
+
+    conn.commit()
+    moved = cursor.rowcount
+    conn.close()
+    return jsonify({"success": True, "moved": moved})
+
+
 @app.route("/api/emails/group/importance/<int:imp_group_id>", methods=["DELETE"])
 @login_required
 def api_delete_importance_group_emails(imp_group_id):
@@ -1293,7 +1477,7 @@ def api_move_email_importance(email_id):
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT id, sender, sender_name, sender_group_id, importance_group_id "
+        "SELECT id, sender, sender_name, sender_group_id, importance_group_id, folder, folder_id "
         "FROM emails WHERE id=? AND user_id=?",
         (email_id, user_id),
     )
@@ -1341,9 +1525,16 @@ def api_move_email_importance(email_id):
         )
         new_sender_group_id = cursor.lastrowid
 
+    update_fields = {"importance_group_id": target_imp_id, "sender_group_id": new_sender_group_id}
+    if email["folder"] != "inbox" or email["folder_id"]:
+        update_fields["folder"] = "inbox"
+        update_fields["folder_id"] = None
+
+    set_clause = ", ".join(f"{k}=?" for k in update_fields)
+    values = list(update_fields.values()) + [email_id, user_id]
     cursor.execute(
-        "UPDATE emails SET importance_group_id=?, sender_group_id=? WHERE id=? AND user_id=?",
-        (target_imp_id, new_sender_group_id, email_id, user_id),
+        f"UPDATE emails SET {set_clause} WHERE id=? AND user_id=?",
+        values,
     )
 
     if old_sender_group_id and old_sender_group_id != new_sender_group_id:
@@ -1985,9 +2176,256 @@ def api_importance_groups():
     return jsonify({"groups": groups})
 
 
+@app.route("/api/groups/importance", methods=["POST"])
+@login_required
+@json_body
+def api_create_importance_group():
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Group name required"}), 400
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM importance_groups WHERE user_id=? AND name=?",
+        (session["user_id"], name),
+    )
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "Group name already exists"}), 409
+
+    cursor.execute(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM importance_groups WHERE user_id=?",
+        (session["user_id"],),
+    )
+    next_order = cursor.fetchone()[0]
+
+    cursor.execute(
+        "INSERT INTO importance_groups (user_id, name, sort_order, is_system) VALUES (?, ?, ?, 0)",
+        (session["user_id"], name, next_order),
+    )
+    group_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "group_id": group_id}), 201
+
+
+@app.route("/api/groups/importance/<int:group_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_rename_importance_group(group_id):
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Group name required"}), 400
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT is_system FROM importance_groups WHERE id=? AND user_id=?",
+        (group_id, session["user_id"]),
+    )
+    g = cursor.fetchone()
+    if not g:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+    if g["is_system"]:
+        conn.close()
+        return jsonify({"error": "Cannot rename system group"}), 403
+
+    cursor.execute(
+        "SELECT id FROM importance_groups WHERE user_id=? AND name=? AND id!=?",
+        (session["user_id"], name, group_id),
+    )
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "Group name already exists"}), 409
+
+    cursor.execute(
+        "UPDATE importance_groups SET name=? WHERE id=? AND user_id=?",
+        (name, group_id, session["user_id"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/groups/importance/<int:group_id>", methods=["DELETE"])
+@login_required
+def api_delete_importance_group(group_id):
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT is_system FROM importance_groups WHERE id=? AND user_id=?",
+        (group_id, session["user_id"]),
+    )
+    g = cursor.fetchone()
+    if not g:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+    if g["is_system"]:
+        conn.close()
+        return jsonify({"error": "Cannot delete system group"}), 403
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM emails WHERE importance_group_id=? AND user_id=?",
+        (group_id, session["user_id"]),
+    )
+    count = cursor.fetchone()[0]
+    if count > 0:
+        conn.close()
+        return jsonify({"error": "分组内有邮件，必须先移出所有邮件后才能删除"}), 409
+
+    cursor.execute(
+        "DELETE FROM importance_groups WHERE id=? AND user_id=?",
+        (group_id, session["user_id"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
 # ---------------------------------------------------------------------------
 # Initialize DB on startup
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Folders API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/folders", methods=["GET"])
+@login_required
+def api_get_folders():
+    """List all folders for the current user."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name, icon, sort_order, is_system FROM folders WHERE user_id=? ORDER BY sort_order, name",
+        (session["user_id"],),
+    )
+    folders = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"folders": folders})
+
+
+@app.route("/api/folders", methods=["POST"])
+@login_required
+@json_body
+def api_create_folder():
+    """Create a custom folder."""
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Folder name required"}), 400
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM folders WHERE user_id=? AND name=?",
+        (session["user_id"], name),
+    )
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "Folder name already exists"}), 409
+
+    cursor.execute(
+        "INSERT INTO folders (user_id, name, icon, is_system) VALUES (?, ?, 'folder', 0)",
+        (session["user_id"], name),
+    )
+    folder_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "folder_id": folder_id}), 201
+
+
+@app.route("/api/folders/<int:folder_id>", methods=["PUT"])
+@login_required
+@json_body
+def api_rename_folder(folder_id):
+    """Rename a custom folder."""
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Folder name required"}), 400
+
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT is_system FROM folders WHERE id=? AND user_id=?",
+        (folder_id, session["user_id"]),
+    )
+    f = cursor.fetchone()
+    if not f:
+        conn.close()
+        return jsonify({"error": "Folder not found"}), 404
+    if f["is_system"]:
+        conn.close()
+        return jsonify({"error": "Cannot rename system folder"}), 403
+
+    cursor.execute(
+        "SELECT id FROM folders WHERE user_id=? AND name=? AND id!=?",
+        (session["user_id"], name, folder_id),
+    )
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "Folder name already exists"}), 409
+
+    cursor.execute(
+        "UPDATE folders SET name=? WHERE id=? AND user_id=?",
+        (name, folder_id, session["user_id"]),
+    )
+    # Also update the denormalized folder TEXT column for existing emails
+    cursor.execute(
+        "UPDATE emails SET folder=? WHERE folder_id=? AND user_id=?",
+        (name, folder_id, session["user_id"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/folders/<int:folder_id>", methods=["DELETE"])
+@login_required
+def api_delete_folder(folder_id):
+    """Delete a custom folder. Fails if folder still has emails."""
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT is_system FROM folders WHERE id=? AND user_id=?",
+        (folder_id, session["user_id"]),
+    )
+    f = cursor.fetchone()
+    if not f:
+        conn.close()
+        return jsonify({"error": "Folder not found"}), 404
+    if f["is_system"]:
+        conn.close()
+        return jsonify({"error": "Cannot delete system folder"}), 403
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM emails WHERE folder_id=? AND user_id=?",
+        (folder_id, session["user_id"]),
+    )
+    count = cursor.fetchone()[0]
+    if count > 0:
+        conn.close()
+        return jsonify({
+            "error": f"Cannot delete folder: {count} email(s) still in this folder. Move or delete them first.",
+            "email_count": count,
+        }), 409
+
+    cursor.execute(
+        "DELETE FROM folders WHERE id=? AND user_id=?",
+        (folder_id, session["user_id"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
 
 _db_dir = os.path.join(os.path.dirname(__file__), "db")
 os.makedirs(_db_dir, exist_ok=True)

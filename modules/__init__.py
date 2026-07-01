@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS importance_groups (
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     sort_order INTEGER DEFAULT 0,
+    is_system INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -147,6 +148,20 @@ CREATE INDEX IF NOT EXISTS idx_sender_groups_user ON sender_groups(user_id);
 CREATE INDEX IF NOT EXISTS idx_forward_rules_user ON forward_rules(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_imp_groups_user_name ON importance_groups(user_id, name);
 
+CREATE TABLE IF NOT EXISTS folders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT 'folder',
+    sort_order INTEGER DEFAULT 0,
+    is_system INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_user_name ON folders(user_id, name);
+
 CREATE TABLE IF NOT EXISTS contact_groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -196,8 +211,8 @@ def _init_user_groups(user_id: int):
     groups = [("Ad", 0), ("Normal", 1), ("Important", 2)]
     for name, sort_order in groups:
         cursor.execute(
-            "INSERT OR IGNORE INTO importance_groups (user_id, name, sort_order) "
-            "VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO importance_groups (user_id, name, sort_order, is_system) "
+            "VALUES (?, ?, ?, 1)",
             (user_id, name, sort_order),
         )
     conn.commit()
@@ -372,6 +387,97 @@ def init_user_db(user_id: int):
         conn.commit()
     except sqlite3.OperationalError:
         pass
+
+    # ---- importance_groups is_system migration ----
+    try:
+        cursor.execute("ALTER TABLE importance_groups ADD COLUMN is_system INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute(
+            "UPDATE importance_groups SET is_system=1 WHERE user_id=? AND name IN ('Ad','Normal','Important')",
+            (user_id,),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # ---- Folders migration ----
+    try:
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS folders ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL,"
+            "name TEXT NOT NULL,"
+            "icon TEXT DEFAULT 'folder',"
+            "sort_order INTEGER DEFAULT 0,"
+            "is_system INTEGER DEFAULT 0,"
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            "UNIQUE(user_id, name))"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_id)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_user_name ON folders(user_id, name)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Deduplicate folders (keep lowest id per name)
+    try:
+        cursor.execute(
+            "SELECT name, MIN(id) as keep_id FROM folders "
+            "WHERE user_id = ? GROUP BY name HAVING COUNT(*) > 1",
+            (user_id,),
+        )
+        for dup in cursor.fetchall():
+            name = dup["name"]
+            keep_id = dup["keep_id"]
+            cursor.execute(
+                "SELECT id FROM folders WHERE user_id=? AND name=? AND id!=?",
+                (user_id, name, keep_id),
+            )
+            for del_id in [r["id"] for r in cursor.fetchall()]:
+                cursor.execute(
+                    "UPDATE emails SET folder_id=? WHERE folder_id=?",
+                    (keep_id, del_id),
+                )
+                cursor.execute("DELETE FROM folders WHERE id=?", (del_id,))
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE emails ADD COLUMN folder_id INTEGER DEFAULT NULL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    default_folders = [
+        ("inbox", "inbox", 0, 1),
+        ("outbox", "send", 1, 1),
+        ("drafts", "file-text", 2, 1),
+        ("deleted", "trash-2", 3, 1),
+    ]
+    for name, icon, sort_order, is_system in default_folders:
+        cursor.execute(
+            "INSERT OR IGNORE INTO folders (user_id, name, icon, sort_order, is_system) VALUES (?, ?, ?, ?, ?)",
+            (user_id, name, icon, sort_order, is_system),
+        )
+    conn.commit()
+
+    cursor.execute(
+        "UPDATE emails SET folder_id = (SELECT id FROM folders WHERE folders.user_id = emails.user_id AND folders.name = emails.folder)"
+        "WHERE folder_id IS NULL AND folder IN ('inbox', 'outbox', 'drafts', 'deleted')"
+    )
+    conn.commit()
 
     conn.close()
     _init_user_groups(user_id)
