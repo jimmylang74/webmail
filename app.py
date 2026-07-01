@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -1376,6 +1377,90 @@ def api_delete_group_emails(sender_group_id):
     return jsonify(resp)
 
 
+@app.route("/api/emails/group/<int:sender_group_id>/delete-progress", methods=["POST"])
+@login_required
+def api_delete_group_emails_with_progress(sender_group_id):
+    """Delete all emails in a sender group with progress tracking.
+
+    Query param: delete_from_server=1 — also delete from server for each email.
+    Returns a task_id immediately; frontend polls GET /api/delete-progress/<task_id>.
+    """
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, server_id, server_uid, folder "
+        "FROM emails WHERE sender_group_id=? AND user_id=?",
+        (sender_group_id, session["user_id"]),
+    )
+    rows = cursor.fetchall()
+
+    # Move to deleted folder synchronously so the tree can refresh immediately
+    cursor.execute(
+        "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=?",
+        (sender_group_id, session["user_id"]),
+    )
+    conn.commit()
+
+    delete_from_server_flag = request.args.get("delete_from_server", "0") == "1"
+
+    server_delete_total = 0
+    server_rows = []
+    if delete_from_server_flag:
+        for row in rows:
+            if row["folder"] != "drafts" and row["server_uid"] and row["server_id"]:
+                server_delete_total += 1
+                server_rows.append(row)
+
+    task_id = str(uuid.uuid4())
+
+    if server_delete_total > 0:
+        with _delete_progress_lock:
+            _delete_progress[task_id] = {
+                "total": server_delete_total,
+                "current": 0,
+                "status": "running",
+                "error": None,
+            }
+
+        threading.Thread(
+            target=_background_delete_group_emails,
+            args=(task_id, session["user_id"], server_rows),
+            daemon=True,
+        ).start()
+
+    conn.close()
+    return jsonify({
+        "task_id": task_id if server_delete_total > 0 else None,
+        "total": len(rows),
+        "server_delete_total": server_delete_total,
+    })
+
+
+@app.route("/api/delete-progress/<task_id>", methods=["GET"])
+@login_required
+def api_delete_progress(task_id):
+    with _delete_progress_lock:
+        entry = _delete_progress.get(task_id)
+
+    if entry is None:
+        return jsonify({"status": "not_found"})
+
+    resp = {
+        "total": entry["total"],
+        "current": entry["current"],
+        "status": entry["status"],
+    }
+    if entry.get("error"):
+        resp["error"] = entry["error"]
+
+    if entry["status"] in ("done", "error"):
+        with _delete_progress_lock:
+            _delete_progress.pop(task_id, None)
+
+    return jsonify(resp)
+
+
 @app.route("/api/emails/group/<int:sender_group_id>/move", methods=["POST"])
 @login_required
 @json_body
@@ -1478,6 +1563,64 @@ def api_delete_importance_group_emails(imp_group_id):
     if server_results:
         resp["server_results"] = server_results
     return jsonify(resp)
+
+
+@app.route("/api/emails/group/importance/<int:imp_group_id>/delete-progress", methods=["POST"])
+@login_required
+def api_delete_importance_group_emails_with_progress(imp_group_id):
+    """Delete all emails in an importance group with progress tracking.
+
+    Query param: delete_from_server=1 — also delete from server for each email.
+    """
+    conn = get_user_db(session["user_id"])
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, server_id, server_uid, folder "
+        "FROM emails WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
+        (imp_group_id, session["user_id"]),
+    )
+    rows = cursor.fetchall()
+
+    cursor.execute(
+        "UPDATE emails SET folder='deleted' WHERE importance_group_id=? AND user_id=? AND folder='inbox'",
+        (imp_group_id, session["user_id"]),
+    )
+    conn.commit()
+
+    delete_from_server_flag = request.args.get("delete_from_server", "0") == "1"
+
+    server_delete_total = 0
+    server_rows = []
+    if delete_from_server_flag:
+        for row in rows:
+            if row["server_uid"] and row["server_id"]:
+                server_delete_total += 1
+                server_rows.append(row)
+
+    task_id = str(uuid.uuid4())
+
+    if server_delete_total > 0:
+        with _delete_progress_lock:
+            _delete_progress[task_id] = {
+                "total": server_delete_total,
+                "current": 0,
+                "status": "running",
+                "error": None,
+            }
+
+        threading.Thread(
+            target=_background_delete_group_emails,
+            args=(task_id, session["user_id"], server_rows),
+            daemon=True,
+        ).start()
+
+    conn.close()
+    return jsonify({
+        "task_id": task_id if server_delete_total > 0 else None,
+        "total": len(rows),
+        "server_delete_total": server_delete_total,
+    })
 
 
 @app.route("/api/emails/clear-deleted", methods=["POST"])
@@ -2569,6 +2712,61 @@ def api_delete_folder(folder_id):
     conn.commit()
     conn.close()
     return jsonify({"success": True})
+
+
+_delete_progress: dict = {}
+_delete_progress_lock = threading.Lock()
+
+
+def _background_delete_group_emails(
+    task_id: str,
+    user_id: int,
+    server_rows: list,
+):
+    try:
+        conn = get_user_db(user_id)
+        cursor = conn.cursor()
+
+        if server_rows:
+            for row in server_rows:
+                if row["folder"] == "drafts":
+                    continue
+                if row["server_uid"] and row["server_id"]:
+                    cursor.execute(
+                        "SELECT incoming_protocol, incoming_server, incoming_port, "
+                        "username, password, use_ssl "
+                        "FROM email_servers WHERE id=? AND user_id=?",
+                        (row["server_id"], user_id),
+                    )
+                    srv = cursor.fetchone()
+                    if srv and srv["incoming_server"]:
+                        sc = {
+                            "incoming_protocol": srv["incoming_protocol"],
+                            "incoming_server": srv["incoming_server"],
+                            "incoming_port": srv["incoming_port"],
+                            "username": srv["username"],
+                            "password": srv["password"],
+                            "use_ssl": srv["use_ssl"],
+                        }
+                        delete_from_server(sc, row["server_uid"])
+
+                with _delete_progress_lock:
+                    entry = _delete_progress.get(task_id)
+                    if entry:
+                        entry["current"] += 1
+
+        with _delete_progress_lock:
+            entry = _delete_progress.get(task_id)
+            if entry:
+                entry["status"] = "done"
+
+        conn.close()
+    except Exception as e:
+        with _delete_progress_lock:
+            entry = _delete_progress.get(task_id)
+            if entry:
+                entry["status"] = "error"
+                entry["error"] = str(e)
 
 
 _db_dir = os.path.join(os.path.dirname(__file__), "db")

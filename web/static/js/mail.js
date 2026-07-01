@@ -9,6 +9,7 @@ let currentState = {
 };
 let allServers = [];
 let contextMenuTarget = null;
+let sortByTime = false;
 
 // Tree state preservation
 let expandedNodeIds = new Set();
@@ -54,6 +55,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (user) {
     try {
       const pref = await api('/api/preferences/sort-by-time');
+      sortByTime = pref.sort_by_time;
       updateDisplayModeBtn(pref.sort_by_time);
     } catch (_) {}
     try {
@@ -88,6 +90,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       } else if (currentState.currentImpGroupId) {
         e.preventDefault();
+        if (deleteProgressTimer) {
+          await showDialog({ title: __('Delete All'), message: __('Previous deletion still in progress. Please wait for it to complete before deleting again.') });
+          return;
+        }
         const serverChecked = document.getElementById('deleteServerCopy').checked;
         let msg = __('Delete ALL emails in this group?');
         if (serverChecked) {
@@ -95,15 +101,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (!(await showDialog({ title: __('Delete All'), message: msg }))) return;
         try {
-          const url = `/api/emails/group/importance/${currentState.currentImpGroupId}` + (serverChecked ? '?delete_from_server=1' : '');
-          await api(url, { method: 'DELETE' });
-          showEmptyState();
-          loadTree();
+          if (serverChecked) {
+            const resp = await api(`/api/emails/group/importance/${currentState.currentImpGroupId}/delete-progress?delete_from_server=1`, { method: 'POST' });
+            if (resp.server_delete_total > 0) {
+              showDeleteProgressDialog(resp.server_delete_total);
+              startDeleteProgressPolling(resp.task_id, resp.server_delete_total);
+            } else {
+              showEmptyState();
+              loadTree();
+            }
+          } else {
+            await api(`/api/emails/group/importance/${currentState.currentImpGroupId}`, { method: 'DELETE' });
+            showEmptyState();
+            loadTree();
+          }
         } catch (err) {
           alert(__('Failed: {0}', err.message));
         }
       } else if (currentState.currentSenderGroupId) {
         e.preventDefault();
+        if (folder !== 'deleted' && deleteProgressTimer) {
+          await showDialog({ title: __('Delete All'), message: __('Previous deletion still in progress. Please wait for it to complete before deleting again.') });
+          return;
+        }
         if (folder === 'deleted') {
           if (!(await showDialog({ title: __('Empty Deleted'), message: __('Permanently delete all emails in Deleted folder?') }))) return;
           try {
@@ -126,10 +146,20 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
           if (!(await showDialog({ title: __('Delete All'), message: msg }))) return;
           try {
-            const url = `/api/emails/group/${currentState.currentSenderGroupId}` + (!isDrafts && serverChecked ? '?delete_from_server=1' : '');
-            await api(url, { method: 'DELETE' });
-            showEmptyState();
-            loadTree();
+            if (!isDrafts && serverChecked) {
+              const resp = await api(`/api/emails/group/${currentState.currentSenderGroupId}/delete-progress?delete_from_server=1`, { method: 'POST' });
+              if (resp.server_delete_total > 0) {
+                showDeleteProgressDialog(resp.server_delete_total);
+                startDeleteProgressPolling(resp.task_id, resp.server_delete_total);
+              } else {
+                showEmptyState();
+                loadTree();
+              }
+            } else {
+              await api(`/api/emails/group/${currentState.currentSenderGroupId}`, { method: 'DELETE' });
+              showEmptyState();
+              loadTree();
+            }
           } catch (err) {
             alert(__('Failed: {0}', err.message));
           }
@@ -842,22 +872,25 @@ function showContextMenu(x, y) {
       });
       moveSubmenu.appendChild(item);
     } else {
-      getImpGroups().then(groups => {
-        groups.forEach(g => {
-          if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
-          const item = document.createElement('div');
-          item.className = 'context-menu-item submenu-item';
-          item.textContent = g.name;
-          const impGroupId = g.id;
-          item.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const savedTarget = contextMenuTarget;
-            hideContextMenu();
-            if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
+      // In time-sorted mode, don't show importance groups in Move-to for individual emails
+      if (!(target.type === 'email' && sortByTime)) {
+        getImpGroups().then(groups => {
+          groups.forEach(g => {
+            if ((target.type === 'email' || target.type === 'sender') && target.impGroupId === g.id) return;
+            const item = document.createElement('div');
+            item.className = 'context-menu-item submenu-item';
+            item.textContent = g.name;
+            const impGroupId = g.id;
+            item.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const savedTarget = contextMenuTarget;
+              hideContextMenu();
+              if (savedTarget) moveTargetToImportance(impGroupId, savedTarget);
+            });
+            moveSubmenu.appendChild(item);
           });
-          moveSubmenu.appendChild(item);
         });
-      });
+      }
 
       api('/api/folders').then(data => {
         const folders = data.folders || [];
@@ -1561,6 +1594,7 @@ function updateDisplayModeBtn(sortByTime) {
 async function toggleDisplayMode() {
   try {
     const result = await api('/api/preferences/sort-by-time', { method: 'POST' });
+    sortByTime = result.sort_by_time;
     updateDisplayModeBtn(result.sort_by_time);
     currentState.serverId = null;
     currentState.currentImpGroupId = null;
@@ -1660,6 +1694,116 @@ function stopFetchProgressPolling() {
     fetchProgressData = {};
     renderServerStatusBar();
   }
+}
+
+// ===== Delete Progress (batch delete from server) =====
+let deleteProgressTaskId = null;
+let deleteProgressTimer = null;
+let deleteProgressTotal = 0;
+
+async function refreshDeleteProgress() {
+  if (!deleteProgressTaskId) return;
+  try {
+    const data = await api(`/api/delete-progress/${deleteProgressTaskId}`);
+    if (data.status === 'not_found') {
+      stopDeleteProgressPolling();
+      return;
+    }
+
+    const total = data.total || 1;
+    const current = data.current || 0;
+    deleteProgressTotal = total;
+
+    updateDeleteProgressUI(current, total);
+
+    if (data.status === 'done') {
+      stopDeleteProgressPolling();
+      hideDeleteProgressDialog();
+      showDeleteProgressToast(true);
+      showEmptyState();
+      loadTree();
+    } else if (data.status === 'error') {
+      stopDeleteProgressPolling();
+      hideDeleteProgressDialog();
+      showDeleteProgressToast(false);
+      showEmptyState();
+      loadTree();
+    }
+  } catch (_) {
+    stopDeleteProgressPolling();
+  }
+}
+
+function startDeleteProgressPolling(taskId, total) {
+  stopDeleteProgressPolling();
+  deleteProgressTaskId = taskId;
+  deleteProgressTotal = total;
+  deleteProgressTimer = setInterval(refreshDeleteProgress, 500);
+  refreshDeleteProgress();
+}
+
+function stopDeleteProgressPolling() {
+  if (deleteProgressTimer) {
+    clearInterval(deleteProgressTimer);
+    deleteProgressTimer = null;
+  }
+  deleteProgressTaskId = null;
+}
+
+function updateDeleteProgressUI(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+
+  const statusEl = document.getElementById('deleteProgressStatus');
+  const textEl = document.getElementById('deleteProgressText');
+  if (statusEl && textEl) {
+    statusEl.style.display = 'inline-flex';
+    textEl.textContent = `${__('{0}/{1}', current, total)}`;
+  }
+
+  const fillEl = document.getElementById('deleteProgressFill');
+  const countEl = document.getElementById('deleteProgressCount');
+  const pctEl = document.getElementById('deleteProgressPct');
+  const msgEl = document.getElementById('deleteProgressMsg');
+  if (fillEl) fillEl.style.width = pct + '%';
+  if (countEl) countEl.textContent = `${current} / ${total}`;
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (msgEl) msgEl.textContent = __('Deleting from server...');
+}
+
+function showDeleteProgressDialog(total) {
+  const dialog = document.getElementById('deleteProgressDialog');
+  if (!dialog) return;
+  dialog.style.display = 'flex';
+
+  const fillEl = document.getElementById('deleteProgressFill');
+  const countEl = document.getElementById('deleteProgressCount');
+  const pctEl = document.getElementById('deleteProgressPct');
+  const msgEl = document.getElementById('deleteProgressMsg');
+  if (fillEl) fillEl.style.width = '0%';
+  if (countEl) countEl.textContent = `0 / ${total}`;
+  if (pctEl) pctEl.textContent = '0%';
+  if (msgEl) msgEl.textContent = __('Preparing...');
+}
+
+function hideDeleteProgressDialog() {
+  const dialog = document.getElementById('deleteProgressDialog');
+  if (dialog) dialog.style.display = 'none';
+}
+
+function showDeleteProgressToast(success) {
+  const statusEl = document.getElementById('deleteProgressStatus');
+  if (!statusEl) return;
+
+  if (success) {
+    statusEl.innerHTML = `<span class="delete-progress-label" style="color:var(--success)">${__('Deletion complete')}</span>`;
+  } else {
+    statusEl.innerHTML = `<span class="delete-progress-label" style="color:var(--danger)">${__('Deletion failed')}</span>`;
+  }
+  statusEl.style.display = 'inline-flex';
+
+  setTimeout(() => {
+    statusEl.style.display = 'none';
+  }, 5000);
 }
 
 async function refreshServerStatusBar() {
