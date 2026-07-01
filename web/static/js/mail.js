@@ -53,8 +53,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const user = await checkSession();
   if (user) {
     try {
-      const pref = await api('/api/preferences/group-by-server');
-      document.getElementById('groupByServer').checked = pref.group_by_server;
+      const pref = await api('/api/preferences/sort-by-time');
+      updateDisplayModeBtn(pref.sort_by_time);
+    } catch (_) {}
+    try {
+      const gbs = await api('/api/preferences/group-by-server');
+      document.getElementById('groupByServer').checked = gbs.group_by_server;
     } catch (_) {}
     loadTree();
     loadServersForCompose();
@@ -1546,7 +1550,26 @@ async function saveDraft() {
   }
 }
 
-// ===== Fetch =====
+// ===== Display Mode =====
+function updateDisplayModeBtn(sortByTime) {
+  const btn = document.getElementById('displayModeBtn');
+  if (btn) {
+    btn.textContent = sortByTime ? __('按分组显示邮件') : __('按时间排序显示邮件');
+  }
+}
+
+async function toggleDisplayMode() {
+  try {
+    const result = await api('/api/preferences/sort-by-time', { method: 'POST' });
+    updateDisplayModeBtn(result.sort_by_time);
+    currentState.serverId = null;
+    currentState.currentImpGroupId = null;
+    currentState.currentSenderGroupId = null;
+    loadTree();
+  } catch (_) {}
+}
+
+// ===== Group by Server =====
 async function toggleGroupByServer(checked) {
   try {
     await api('/api/preferences/group-by-server', { method: 'POST' });
@@ -1554,6 +1577,8 @@ async function toggleGroupByServer(checked) {
     loadTree();
   } catch (_) {}
 }
+
+// ===== Fetch =====
 
 async function fetchAll() {
   const statusEl = document.getElementById('fetchStatus');

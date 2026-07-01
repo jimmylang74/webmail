@@ -696,6 +696,51 @@ def _build_inbox_children(user_id, cursor, imp_groups, server_id=None):
     return children
 
 
+def _folder_email_flat_children(user_id, cursor, folder_name=None, folder_id=None, server_id=None, limit=100):
+    """Build flat time-sorted email children for a folder.
+
+    Supports filtering by folder name, folder_id, and/or server_id.
+    Returns emails sorted by received_date DESC (newest first).
+    """
+    where_parts = ["user_id = ?"]
+    params = [user_id]
+    if folder_name:
+        where_parts.append("folder = ?")
+        params.append(folder_name)
+    if folder_id:
+        where_parts.append("folder_id = ?")
+        params.append(folder_id)
+    if server_id:
+        where_parts.append("server_id = ?")
+        params.append(server_id)
+    where = " AND ".join(where_parts)
+
+    cursor.execute(
+        f"SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, "
+        f"importance_group_id, sender_group_id "
+        f"FROM emails WHERE {where} ORDER BY received_date DESC LIMIT ?",
+        params + [limit],
+    )
+    return [
+        {
+            "id": f"email_{em['id']}",
+            "name": em["subject"] or "(No Subject)",
+            "email_id": em["id"],
+            "folder": folder_name,
+            "folder_id": folder_id,
+            "sender": em["sender"],
+            "sender_name": em["sender_name"],
+            "is_read": em["is_read"],
+            "received_date": em["received_date"],
+            "server_badge": em["server_badge"],
+            "imp_group_id": em["importance_group_id"],
+            "sender_group_id": em["sender_group_id"],
+            "type": "email",
+        }
+        for em in cursor.fetchall()
+    ]
+
+
 @app.route("/api/mailbox/tree", methods=["GET"])
 @login_required
 def api_mailbox_tree():
@@ -707,13 +752,14 @@ def api_mailbox_tree():
     cursor = conn.cursor()
     imp_groups = get_importance_groups(user_id)
 
+    folders = []
+    sort_by_time = session.get("sort_by_time", False)
+
     cursor.execute(
         "SELECT id, server_name FROM email_servers WHERE user_id = ? ORDER BY id",
         (user_id,),
     )
     servers = cursor.fetchall()
-
-    folders = []
 
     if session.get("group_by_server") and servers:
         for srv in servers:
@@ -728,6 +774,11 @@ def api_mailbox_tree():
             )
             unread = cursor.fetchone()[0]
 
+            if sort_by_time:
+                srv_children = _folder_email_flat_children(user_id, cursor, folder_name='inbox', server_id=srv["id"])
+            else:
+                srv_children = _build_inbox_children(user_id, cursor, imp_groups, server_id=srv["id"])
+
             srv_node = {
                 "id": f"server_{srv['id']}",
                 "name": srv["server_name"],
@@ -735,17 +786,21 @@ def api_mailbox_tree():
                 "server_id": srv["id"],
                 "count": total,
                 "unread": unread,
-                "children": _build_inbox_children(user_id, cursor, imp_groups, server_id=srv["id"]),
+                "children": srv_children,
             }
             folders.append(srv_node)
     else:
+        if sort_by_time:
+            inbox_children = _folder_email_flat_children(user_id, cursor, folder_name='inbox')
+        else:
+            inbox_children = _build_inbox_children(user_id, cursor, imp_groups)
         folders.append({
             "id": "inbox",
             "name": "Inbox",
             "icon": "inbox",
             "count": stats["inbox"],
             "unread": stats["unread"],
-            "children": _build_inbox_children(user_id, cursor, imp_groups),
+            "children": inbox_children,
         })
 
     def _folder_email_children(cursor, folder_name):
@@ -834,13 +889,21 @@ def api_mailbox_tree():
             })
         return children
 
+    if sort_by_time:
+        flat_outbox = _folder_email_flat_children(user_id, cursor, folder_name='outbox')
+        flat_drafts = _folder_email_flat_children(user_id, cursor, folder_name='drafts')
+        flat_deleted = _folder_email_flat_children(user_id, cursor, folder_name='deleted')
+    else:
+        flat_outbox = _folder_email_children(cursor, "outbox")
+        flat_drafts = _folder_email_children(cursor, "drafts")
+        flat_deleted = _folder_sender_group_children(cursor, "deleted")
     folders.extend([
         {"id": "outbox", "name": "Outbox", "icon": "send", "count": stats["outbox"],
-         "children": _folder_email_children(cursor, "outbox")},
+         "children": flat_outbox},
         {"id": "drafts", "name": "Drafts", "icon": "file-text", "count": stats["drafts"],
-         "children": _folder_email_children(cursor, "drafts")},
+         "children": flat_drafts},
         {"id": "deleted", "name": "Deleted", "icon": "trash-2", "count": stats["deleted"],
-         "children": _folder_sender_group_children(cursor, "deleted")},
+         "children": flat_deleted},
     ])
 
     # Custom folders
@@ -854,24 +917,81 @@ def api_mailbox_tree():
             (user_id, cf["id"]),
         )
         cf_count = cursor.fetchone()[0]
-        children = []
-        if cf_count > 0:
-            cursor.execute(
-                "SELECT sg.id, sg.group_name, sg.sender_email, COUNT(*) as cnt "
-                "FROM emails e JOIN sender_groups sg ON e.sender_group_id = sg.id "
-                "WHERE e.user_id=? AND e.folder_id=? "
-                "GROUP BY sg.id ORDER BY sg.group_name",
-                (user_id, cf["id"]),
-            )
-            for sg in cursor.fetchall():
+        if sort_by_time:
+            children = _folder_email_flat_children(user_id, cursor, folder_id=cf["id"])
+            # Rebuild each child dict with the custom folder node-id prefix
+            children = [
+                {
+                    "id": f"cf_{cf['id']}_{em['email_id']}",
+                    "name": em["name"],
+                    "email_id": em["email_id"],
+                    "folder": cf["name"],
+                    "folder_id": cf["id"],
+                    "sender": em["sender"],
+                    "sender_name": em["sender_name"],
+                    "is_read": em["is_read"],
+                    "received_date": em["received_date"],
+                    "server_badge": em["server_badge"],
+                    "imp_group_id": em["imp_group_id"],
+                    "sender_group_id": em["sender_group_id"],
+                    "type": "email",
+                }
+                for em in children
+            ]
+        else:
+            children = []
+            if cf_count > 0:
+                cursor.execute(
+                    "SELECT sg.id, sg.group_name, sg.sender_email, COUNT(*) as cnt "
+                    "FROM emails e JOIN sender_groups sg ON e.sender_group_id = sg.id "
+                    "WHERE e.user_id=? AND e.folder_id=? "
+                    "GROUP BY sg.id ORDER BY sg.group_name",
+                    (user_id, cf["id"]),
+                )
+                for sg in cursor.fetchall():
+                    cursor.execute(
+                        "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, importance_group_id "
+                        "FROM emails WHERE user_id=? AND folder_id=? AND sender_group_id=? "
+                        "ORDER BY received_date DESC LIMIT 50",
+                        (user_id, cf["id"], sg["id"]),
+                    )
+                    email_children = [
+                        {
+                            "id": f"cf_{cf['id']}_{em['id']}",
+                            "name": em["subject"] or "(No Subject)",
+                            "email_id": em["id"],
+                            "folder": cf["name"],
+                            "folder_id": cf["id"],
+                            "sender": em["sender"],
+                            "sender_name": em["sender_name"],
+                            "is_read": em["is_read"],
+                            "received_date": em["received_date"],
+                            "server_badge": em["server_badge"],
+                            "imp_group_id": em["importance_group_id"],
+                            "sender_group_id": sg["id"],
+                            "type": "email",
+                        }
+                        for em in cursor.fetchall()
+                    ]
+                    children.append({
+                        "id": f"cf_{cf['id']}_sg_{sg['id']}",
+                        "name": sg["group_name"],
+                        "email": sg["sender_email"],
+                        "folder": cf["name"],
+                        "folder_id": cf["id"],
+                        "icon": "user",
+                        "count": sg["cnt"],
+                        "sender_group_id": sg["id"],
+                        "children": email_children,
+                    })
                 cursor.execute(
                     "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, importance_group_id "
-                    "FROM emails WHERE user_id=? AND folder_id=? AND sender_group_id=? "
+                    "FROM emails WHERE user_id=? AND folder_id=? AND sender_group_id IS NULL "
                     "ORDER BY received_date DESC LIMIT 50",
-                    (user_id, cf["id"], sg["id"]),
+                    (user_id, cf["id"]),
                 )
-                email_children = [
-                    {
+                for em in cursor.fetchall():
+                    children.append({
                         "id": f"cf_{cf['id']}_{em['id']}",
                         "name": em["subject"] or "(No Subject)",
                         "email_id": em["id"],
@@ -883,43 +1003,8 @@ def api_mailbox_tree():
                         "received_date": em["received_date"],
                         "server_badge": em["server_badge"],
                         "imp_group_id": em["importance_group_id"],
-                        "sender_group_id": sg["id"],
                         "type": "email",
-                    }
-                    for em in cursor.fetchall()
-                ]
-                children.append({
-                    "id": f"cf_{cf['id']}_sg_{sg['id']}",
-                    "name": sg["group_name"],
-                    "email": sg["sender_email"],
-                    "folder": cf["name"],
-                    "folder_id": cf["id"],
-                    "icon": "user",
-                    "count": sg["cnt"],
-                    "sender_group_id": sg["id"],
-                    "children": email_children,
-                })
-            cursor.execute(
-                "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, importance_group_id "
-                "FROM emails WHERE user_id=? AND folder_id=? AND sender_group_id IS NULL "
-                "ORDER BY received_date DESC LIMIT 50",
-                (user_id, cf["id"]),
-            )
-            for em in cursor.fetchall():
-                children.append({
-                    "id": f"cf_{cf['id']}_{em['id']}",
-                    "name": em["subject"] or "(No Subject)",
-                    "email_id": em["id"],
-                    "folder": cf["name"],
-                    "folder_id": cf["id"],
-                    "sender": em["sender"],
-                    "sender_name": em["sender_name"],
-                    "is_read": em["is_read"],
-                    "received_date": em["received_date"],
-                    "server_badge": em["server_badge"],
-                    "imp_group_id": em["importance_group_id"],
-                    "type": "email",
-                })
+                    })
         folders.append({
             "id": f"cf_{cf['id']}",
             "name": cf["name"],
@@ -1933,6 +2018,19 @@ def api_get_group_by_server():
 def api_toggle_group_by_server():
     session["group_by_server"] = not session.get("group_by_server", False)
     return jsonify({"group_by_server": session["group_by_server"]})
+
+
+@app.route("/api/preferences/sort-by-time", methods=["GET"])
+@login_required
+def api_get_sort_by_time():
+    return jsonify({"sort_by_time": session.get("sort_by_time", False)})
+
+
+@app.route("/api/preferences/sort-by-time", methods=["POST"])
+@login_required
+def api_toggle_sort_by_time():
+    session["sort_by_time"] = not session.get("sort_by_time", False)
+    return jsonify({"sort_by_time": session["sort_by_time"]})
 
 
 # ---------------------------------------------------------------------------

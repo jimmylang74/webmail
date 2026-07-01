@@ -12,6 +12,7 @@
     <!-- Top Toolbar -->
     <header class="toolbar">
       <div class="toolbar-left">
+        <button class="btn btn-sm btn-outline" id="displayModeBtn" onclick="toggleDisplayMode()">{{ T('按时间排序显示邮件') }}</button>
         <label class="checkbox-label" title="{{ T('Group by Server') }}">
           <input type="checkbox" id="groupByServer" onchange="toggleGroupByServer(this.checked)">
           {{ T('Group by Server') }}
