@@ -1526,7 +1526,7 @@ def api_move_email_importance(email_id):
         new_sender_group_id = cursor.lastrowid
 
     update_fields = {"importance_group_id": target_imp_id, "sender_group_id": new_sender_group_id}
-    if email["folder"] != "inbox" or email["folder_id"]:
+    if email["folder"] != "inbox":
         update_fields["folder"] = "inbox"
         update_fields["folder_id"] = None
 
@@ -1615,10 +1615,12 @@ def api_update_sender_group(group_id):
     cursor = conn.cursor()
 
     # Build dynamic SET clause for provided fields
+    server_id = data.get("server_id")
+
     updates = []
     params = []
 
-    if importance_group_id is not None:
+    if importance_group_id is not None and not server_id:
         updates.append("importance_group_id=?")
         params.append(importance_group_id)
         updates.append("is_auto_classified=0")
@@ -1628,31 +1630,75 @@ def api_update_sender_group(group_id):
         params.append(group_name)
         updates.append("is_auto_classified=0")
 
-    if not updates:
-        conn.close()
-        return jsonify({"success": False, "error": "No fields to update"}), 400
-
-    params.extend([group_id, session["user_id"]])
-    cursor.execute(
-        f"UPDATE sender_groups SET {', '.join(updates)} WHERE id=? AND user_id=?",
-        params,
-    )
-    ok = cursor.rowcount > 0
-
-    if ok and importance_group_id is not None:
+    if updates:
+        params.extend([group_id, session["user_id"]])
         cursor.execute(
-            "UPDATE emails SET importance_group_id=? WHERE sender_group_id=? AND user_id=?",
-            (importance_group_id, group_id, session["user_id"]),
+            f"UPDATE sender_groups SET {', '.join(updates)} WHERE id=? AND user_id=?",
+            params,
         )
+        ok = cursor.rowcount > 0
+    else:
+        ok = True
 
-        cursor.execute(
-            "SELECT sender_domain FROM sender_groups WHERE id=? AND user_id=?",
-            (group_id, session["user_id"]),
-        )
-        sg = cursor.fetchone()
-        if sg:
-            sender_domain = sg["sender_domain"]
-            _dedup_sender_groups(cursor, session["user_id"], sender_domain)
+    if importance_group_id is not None:
+        if server_id:
+            cursor.execute(
+                "SELECT sender_domain FROM sender_groups WHERE id=? AND user_id=?",
+                (group_id, session["user_id"]),
+            )
+            sg_info = cursor.fetchone()
+            if sg_info:
+                sender_domain = sg_info["sender_domain"]
+
+                existing = cursor.execute(
+                    "SELECT id, sender_email, sender_name FROM sender_groups WHERE user_id=? AND sender_domain=? AND importance_group_id=?",
+                    (session["user_id"], sender_domain, importance_group_id),
+                ).fetchone()
+                if existing:
+                    target_sg_id = existing["id"]
+                else:
+                    cursor.execute(
+                        "SELECT sender, sender_name FROM emails WHERE sender_group_id=? AND user_id=? AND server_id=? LIMIT 1",
+                        (group_id, session["user_id"], server_id),
+                    )
+                    sample = cursor.fetchone()
+                    if sample:
+                        sender_email = sample["sender"]
+                        sender_name = sample["sender_name"] or sender_email.split("@")[0]
+                        cursor.execute(
+                            "INSERT INTO sender_groups (user_id, sender_email, sender_name, sender_domain, group_name, importance_group_id, is_auto_classified) "
+                            "VALUES (?, ?, ?, ?, ?, ?, 0)",
+                            (session["user_id"], sender_email, sender_name, sender_domain, sender_name, importance_group_id),
+                        )
+                        target_sg_id = cursor.lastrowid
+                    else:
+                        target_sg_id = None
+
+                if target_sg_id:
+                    cursor.execute(
+                        "UPDATE emails SET sender_group_id=?, importance_group_id=? WHERE sender_group_id=? AND user_id=? AND server_id=?",
+                        (target_sg_id, importance_group_id, group_id, session["user_id"], server_id),
+                    )
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM emails WHERE sender_group_id=?", (group_id,)
+            )
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("DELETE FROM sender_groups WHERE id=?", (group_id,))
+        else:
+            cursor.execute(
+                "UPDATE emails SET importance_group_id=? WHERE sender_group_id=? AND user_id=?",
+                (importance_group_id, group_id, session["user_id"]),
+            )
+
+            cursor.execute(
+                "SELECT sender_domain FROM sender_groups WHERE id=? AND user_id=?",
+                (group_id, session["user_id"]),
+            )
+            sg = cursor.fetchone()
+            if sg:
+                sender_domain = sg["sender_domain"]
+                _dedup_sender_groups(cursor, session["user_id"], sender_domain)
 
     conn.commit()
     conn.close()

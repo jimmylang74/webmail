@@ -347,6 +347,7 @@ function createTreeItem(node, depth) {
         e.dataTransfer.setData('text/plain', JSON.stringify({
           type: 'sender',
           senderGroupId: node.sender_group_id,
+          serverId: node.server_id,
           impGroupId: node.imp_group_id,
         }));
       }
@@ -381,7 +382,7 @@ function createTreeItem(node, depth) {
         if (data.type === 'email' && data.emailId) {
           moveEmailToImportance(data.emailId, impGroupId);
         } else if (data.type === 'sender' && data.senderGroupId) {
-          moveSenderGroupImportance(data.senderGroupId, impGroupId);
+          moveSenderGroupImportance(data.senderGroupId, impGroupId, data.serverId);
         }
       } catch (_) {}
     });
@@ -1005,9 +1006,11 @@ async function moveTargetToImportance(impGroupId, target) {
         body: { importance_group_id: impGroupId },
       });
     } else if (target.type === 'sender') {
+      const body = { importance_group_id: impGroupId };
+      if (target.serverId) body.server_id = target.serverId;
       await api(`/api/sender-groups/${target.id}`, {
         method: 'PUT',
-        body: { importance_group_id: impGroupId },
+        body,
       });
     }
     loadTree();
@@ -1028,11 +1031,13 @@ async function moveEmailToImportance(emailId, impGroupId) {
   }
 }
 
-async function moveSenderGroupImportance(senderGroupId, impGroupId) {
+async function moveSenderGroupImportance(senderGroupId, impGroupId, serverId) {
   try {
+    const body = { importance_group_id: impGroupId };
+    if (serverId) body.server_id = serverId;
     await api(`/api/sender-groups/${senderGroupId}`, {
       method: 'PUT',
-      body: { importance_group_id: impGroupId },
+      body,
     });
     loadTree();
   } catch (err) {
