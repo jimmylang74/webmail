@@ -186,12 +186,20 @@ class ImapIdleConnection:
             timeout=30,
         )
         try:
-            # Coremail IMAP (e.g. 126.com) requires ID command before LOGIN
+            # Coremail IMAP (e.g. 126.com) requires ID command before LOGIN.
+            # Some servers (Gmail) advertise ID capability but reject the raw
+            # command format — skip gracefully if the server doesn't accept it.
             if client.has_capability("ID"):
-                client._raw_command(
-                    b"ID",
-                    [b'("name" "PythonIMAP" "version" "1.0" "vendor" "self")'],
-                )
+                try:
+                    client._raw_command(
+                        b"ID",
+                        [b'("name" "PythonIMAP" "version" "1.0" "vendor" "self")'],
+                    )
+                except Exception:
+                    logger.debug(
+                        "ID command rejected for server %s – continuing without it",
+                        self.server_id,
+                    )
             client.login(cfg["username"], cfg["password"])
             client.select_folder("INBOX")
 
