@@ -1188,17 +1188,50 @@ async function contextDeleteAll() {
   const target = contextMenuTarget;
   hideContextMenu();
   if (!target) return;
-  if (!(await showDialog({ title: __('Delete All'), message: __('Delete ALL emails in this group?') }))) return;
+
+  const serverChecked = document.getElementById('deleteServerCopy').checked;
+  let msg = __('Delete ALL emails in this group?');
+  if (serverChecked) {
+    msg += '\n\n' + __('Also delete from server') + ': ' + __('This will permanently delete the server copies as well.');
+  }
+  if (!(await showDialog({ title: __('Delete All'), message: msg }))) return;
 
   try {
     if (target.type === 'sender') {
-      const impParam = target.impGroupId ? `?imp_group_id=${target.impGroupId}` : '';
-      await api(`/api/emails/group/${target.id}${impParam}`, { method: 'DELETE' });
+      const impParam = target.impGroupId ? `&imp_group_id=${target.impGroupId}` : '';
+      if (serverChecked) {
+        const resp = await api(`/api/emails/group/${target.id}/delete-progress?delete_from_server=1${impParam}`, { method: 'POST' });
+        if (resp.server_delete_total > 0) {
+          showDeleteProgressDialog(resp.server_delete_total);
+          startDeleteProgressPolling(resp.task_id, resp.server_delete_total);
+        } else {
+          showEmptyState();
+          loadTree();
+        }
+      } else {
+        await api(`/api/emails/group/${target.id}?delete_from_server=0${impParam}`, { method: 'DELETE' });
+        showEmptyState();
+        loadTree();
+      }
     } else if (target.type === 'imp') {
-      await api(`/api/emails/group/importance/${target.id}`, { method: 'DELETE' });
+      if (serverChecked) {
+        const resp = await api(`/api/emails/group/importance/${target.id}/delete-progress?delete_from_server=1`, { method: 'POST' });
+        if (resp.server_delete_total > 0) {
+          showDeleteProgressDialog(resp.server_delete_total);
+          startDeleteProgressPolling(resp.task_id, resp.server_delete_total);
+        } else {
+          showEmptyState();
+          loadTree();
+        }
+      } else {
+        await api(`/api/emails/group/importance/${target.id}`, { method: 'DELETE' });
+        showEmptyState();
+        loadTree();
+      }
+    } else {
+      showEmptyState();
+      loadTree();
     }
-    showEmptyState();
-    loadTree();
   } catch (err) {
     alert(__('Failed: {0}', err.message));
   }
