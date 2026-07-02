@@ -42,7 +42,7 @@ from modules.email_classify import (
     auto_classify_senders,
     classify_unclassified_emails,
 )
-from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, test_server_connection, check_imap_capabilities, download_all_emails, delete_from_server
+from modules.email_fetch import fetch_all_for_user, fetch_emails, get_all_fetch_progress, _update_progress, test_server_connection, check_imap_capabilities, download_all_emails, delete_from_server
 from modules.email_send import save_draft, send_email
 from modules.forward import (
     create_forward_rule,
@@ -455,10 +455,30 @@ def api_download_all_server(server_id):
     user_id = session["user_id"]
 
     def _download_and_fwd():
+        conn = get_user_db(user_id)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM emails WHERE user_id=? AND server_id=? AND folder IN ('inbox', 'deleted')",
+            (user_id, server_id),
+        )
+        conn.commit()
+        conn.close()
+
         result = download_all_emails(server_id, user_id)
         if result.get("success"):
-            classify_unclassified_emails(user_id)
-            auto_classify_senders(user_id)
+            conn = get_user_db(user_id)
+            cursor = conn.cursor()
+            cursor.execute("SELECT server_name FROM email_servers WHERE id=?", (server_id,))
+            row = cursor.fetchone()
+            conn.close()
+            server_name = row["server_name"] if row else ""
+
+            _update_progress(server_id, 1, 0, "classifying", server_name)
+            try:
+                classify_unclassified_emails(user_id)
+                auto_classify_senders(user_id)
+            finally:
+                _update_progress(server_id, 1, 1, "done", server_name)
         elif not result.get("success"):
             logging.error("Download all failed for server %d: %s", server_id, result.get("error"))
 

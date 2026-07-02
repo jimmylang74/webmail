@@ -1672,10 +1672,10 @@ async function refreshFetchProgress() {
       return;
     }
 
-    const hasActive = entries.some(p => p.status === 'fetching' || p.status === 'downloading');
+    const hasActive = entries.some(p => p.status === 'fetching' || p.status === 'downloading' || p.status === 'classifying');
     if (!hasActive) {
       fetchProgressCount++;
-      if (fetchProgressCount > 3) {  // ~6 seconds after last active
+      if (fetchProgressCount > 3) {
         stopFetchProgressPolling();
         loadTree();
       }
@@ -1689,7 +1689,6 @@ async function refreshFetchProgress() {
 
 function startFetchProgressPolling() {
   stopFetchProgressPolling();
-  fetchProgressCount = 0;
   fetchProgressTimer = setInterval(refreshFetchProgress, 2000);
   refreshFetchProgress();
 }
@@ -1882,6 +1881,7 @@ function renderServerStatusBar() {
     const progress = fetchProgressData[srv.id];
     const isFetching = progress && progress.status === 'fetching';
     const isDownloading = progress && progress.status === 'downloading';
+    const isClassifying = progress && progress.status === 'classifying';
     const isDone = progress && (progress.status === 'done' || progress.status === 'error');
 
     let modeText = '';
@@ -1903,7 +1903,7 @@ function renderServerStatusBar() {
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
         <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" disabled>${__('Fetch')}</button>
-        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Download All')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Refresh Server Emails')}</button>
         <span class="server-status-mode">${modeText}</span>
         <div class="fetch-progress-wrap">
           <div class="fetch-progress-bar">
@@ -1921,7 +1921,7 @@ function renderServerStatusBar() {
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
         <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" disabled>${__('Fetch')}</button>
-        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Download All')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Refresh Server Emails')}</button>
         <span class="server-status-mode">${modeText}</span>
         <div class="fetch-progress-wrap">
           <div class="fetch-progress-bar">
@@ -1930,12 +1930,26 @@ function renderServerStatusBar() {
           <span class="fetch-progress-text">${__('Downloading {0}/{1}', current, total)}</span>
         </div>
       `;
+    } else if (isClassifying) {
+      row.innerHTML = `
+        <span class="server-status-name">${escHtml(srv.server_name)}</span>
+        <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
+        <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})" disabled>${__('Fetch')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})" disabled>${__('Refresh Server Emails')}</button>
+        <span class="server-status-mode">${modeText}</span>
+        <div class="fetch-progress-wrap">
+          <div class="fetch-progress-bar">
+            <div class="fetch-progress-fill classifying-fill" style="width:100%"></div>
+          </div>
+          <span class="fetch-progress-text">${__('Classifying...')}</span>
+        </div>
+      `;
     } else {
       row.innerHTML = `
         <span class="server-status-name">${escHtml(srv.server_name)}</span>
         <button class="btn btn-sm btn-outline" onclick="composeForServer(${srv.id})">${__('Compose')}</button>
         <button class="btn btn-sm btn-outline" onclick="fetchOneServer(${srv.id})">${__('Fetch')}</button>
-        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})">${__('Download All')}</button>
+        <button class="btn btn-sm btn-outline" onclick="downloadAllServer(${srv.id})">${__('Refresh Server Emails')}</button>
         <span class="server-status-mode">${modeText}</span>
       `;
     }

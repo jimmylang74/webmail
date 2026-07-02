@@ -750,14 +750,15 @@ def download_all_emails(server_id: int, user_id: int) -> dict:
 
                 for i in range(0, total_all, batch_size):
                     batch_uids = new_uids[i:i + batch_size]
-                    batch_emails = _fetch_imap_uids(server, batch_uids, server_config)
+                    batch_emails = _fetch_imap_uids(
+                        server, batch_uids, server_config,
+                        server_id=server_id, total=total_all, base_index=i, server_name=server_name,
+                    )
                     batch_stored = _store_emails(batch_emails, owner_id, server_id, server_config)
                     total_fetched += batch_stored
                     for em in batch_emails:
                         if em.get("server_uid"):
                             local_known.add(em["server_uid"])
-                    for j in range(len(batch_uids)):
-                        _update_progress(server_id, total_all, i + j + 1, "downloading", server_name)
 
                 # Handle delete_after_download for IMAP
                 if server_config.get("delete_after_download"):
@@ -818,14 +819,22 @@ def _connect_imap(server_config: dict) -> tuple | None:
         return None
 
 
-def _fetch_imap_uids(server, uids: list, server_config: dict) -> list:
+def _fetch_imap_uids(
+    server, uids: list, server_config: dict,
+    server_id: int = 0, total: int = 0, base_index: int = 0, server_name: str = "",
+) -> list:
     """Fetch specific UIDs from an already-connected IMAP server.
+
+    When *server_id* is non-zero, reports per-email progress via
+    ``_update_progress`` so the frontend sees smooth incremental updates.
+    *total*, *base_index*, and *server_name* are forwarded to the
+    progress tracker as well.
 
     Returns list of email dicts.
     """
     emails_fetched = []
     seen_msg_ids = set()
-    for uid in uids:
+    for idx, uid in enumerate(uids):
         try:
             _, msg_data = server.uid("FETCH", uid, "(RFC822)")
             raw_email = None
@@ -864,6 +873,9 @@ def _fetch_imap_uids(server, uids: list, server_config: dict) -> list:
                 "body_html": body_html,
                 "received_date": received_date.isoformat(),
             })
+
+            if server_id:
+                _update_progress(server_id, total, base_index + idx + 1, "downloading", server_name)
         except Exception:
             continue
     return emails_fetched

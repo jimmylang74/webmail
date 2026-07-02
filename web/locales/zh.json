@@ -219,5 +219,8 @@
   "Find in Inbox": "在收件箱中查找",
   "No sender group found matching domain: {0}": "未找到域名匹配的发件人分组：{0}",
   "Failed to locate sender group": "定位发件人分组失败",
-  "Invalid email address": "无效的邮箱地址"
+  "Invalid email address": "无效的邮箱地址",
+  "Classifying...": "分类中...",
+
+  "Refresh Server Emails": "刷新服务器邮件"
 }

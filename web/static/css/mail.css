@@ -50,6 +50,14 @@
 .download-all-fill {
   background: linear-gradient(90deg, #f093fb, #f5576c);
 }
+.classifying-fill {
+  background: linear-gradient(90deg, #ffd700, #ffaa00);
+  animation: classify-pulse 1.5s ease-in-out infinite;
+}
+@keyframes classify-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 .fetch-progress-text {
   font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums;
 }

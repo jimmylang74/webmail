@@ -62,5 +62,8 @@
   "Deleted folder emptied": "Deleted folder emptied",
   "This will permanently delete the server copies as well.": "This will permanently delete the server copies as well.",
   "This will permanently delete the email from the database.": "This will permanently delete the email from the database.",
-  "Delete this email permanently?": "Delete this email permanently?"
+  "Delete this email permanently?": "Delete this email permanently?",
+
+  "Refresh Server Emails": "Refresh Server Emails",
+  "Classifying...": "Classifying..."
 }
