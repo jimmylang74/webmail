@@ -3,6 +3,7 @@
 let currentState = {
   currentEmailId: null,
   currentSenderGroupId: null,
+  currentSenderGroupImpGroupId: null,
   currentImpGroupId: null,
   currentFolder: 'inbox',
   currentFolderId: null,
@@ -138,6 +139,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             alert(__('Failed: {0}', err.message));
           }
         } else {
+          const activeSenderEl = document.querySelector('.tree-item.active[data-sender-group-id]');
+          const activeImpId = activeSenderEl ? activeSenderEl.dataset.senderGroupImpGroupId : currentState.currentSenderGroupImpGroupId;
+
           const isDrafts = folder === 'drafts';
           const serverChecked = document.getElementById('deleteServerCopy').checked;
           let msg = __('Delete ALL emails in this group?');
@@ -146,8 +150,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
           if (!(await showDialog({ title: __('Delete All'), message: msg }))) return;
           try {
+            const impParam = activeImpId ? `&imp_group_id=${activeImpId}` : '';
             if (!isDrafts && serverChecked) {
-              const resp = await api(`/api/emails/group/${currentState.currentSenderGroupId}/delete-progress?delete_from_server=1`, { method: 'POST' });
+              const resp = await api(`/api/emails/group/${currentState.currentSenderGroupId}/delete-progress?delete_from_server=1${impParam}`, { method: 'POST' });
               if (resp.server_delete_total > 0) {
                 showDeleteProgressDialog(resp.server_delete_total);
                 startDeleteProgressPolling(resp.task_id, resp.server_delete_total);
@@ -156,7 +161,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 loadTree();
               }
             } else {
-              await api(`/api/emails/group/${currentState.currentSenderGroupId}`, { method: 'DELETE' });
+              await api(`/api/emails/group/${currentState.currentSenderGroupId}?delete_from_server=0${impParam}`, { method: 'DELETE' });
               showEmptyState();
               loadTree();
             }
@@ -313,11 +318,15 @@ function createTreeItem(node, depth) {
 	        const toggleEl = main.querySelector('.tree-toggle');
 	        if (toggleEl) toggleEl.classList.toggle('collapsed');
 	      }
-	      if (isSenderGroup) {
-	        main.classList.add('active');
-	        currentState.currentSenderGroupId = node.sender_group_id;
-	        currentState.currentFolder = node.folder || 'inbox';
-	      } else if (isImpGroup) {
+		      if (isSenderGroup) {
+		        clearDeleteProgressStatus();
+		        main.classList.add('active');
+		        main.dataset.senderGroupId = node.sender_group_id;
+		        main.dataset.senderGroupImpGroupId = node.imp_group_id != null ? String(node.imp_group_id) : '';
+		        currentState.currentSenderGroupId = node.sender_group_id;
+		        currentState.currentSenderGroupImpGroupId = node.imp_group_id;
+		        currentState.currentFolder = node.folder || 'inbox';
+		      } else if (isImpGroup) {
 	        main.classList.add('active');
 	        currentState.currentImpGroupId = node.imp_group_id;
 	        currentState.currentFolder = 'inbox';
@@ -531,6 +540,7 @@ function showEmptyState() {
   document.getElementById('emptyState').style.display = 'flex';
   currentState.currentEmailId = null;
   currentState.currentSenderGroupId = null;
+  currentState.currentSenderGroupImpGroupId = null;
   currentState.currentImpGroupId = null;
   currentState.currentFolder = 'inbox';
   // Clear email highlight
@@ -540,11 +550,13 @@ function showEmptyState() {
 
 // ===== Email Detail =====
 async function openEmail(emailId) {
+  clearDeleteProgressStatus();
   try {
     const data = await api(`/api/emails/${emailId}`);
     const email = data.email;
     currentState.currentEmailId = emailId;
     currentState.currentSenderGroupId = null;
+    currentState.currentSenderGroupImpGroupId = null;
     currentState.currentImpGroupId = null;
 
     document.getElementById('composeView').style.display = 'none';
@@ -1180,7 +1192,8 @@ async function contextDeleteAll() {
 
   try {
     if (target.type === 'sender') {
-      await api(`/api/emails/group/${target.id}`, { method: 'DELETE' });
+      const impParam = target.impGroupId ? `?imp_group_id=${target.impGroupId}` : '';
+      await api(`/api/emails/group/${target.id}${impParam}`, { method: 'DELETE' });
     } else if (target.type === 'imp') {
       await api(`/api/emails/group/importance/${target.id}`, { method: 'DELETE' });
     }
@@ -1700,6 +1713,7 @@ function stopFetchProgressPolling() {
 let deleteProgressTaskId = null;
 let deleteProgressTimer = null;
 let deleteProgressTotal = 0;
+let _lastTreeRefresh = 0;
 
 async function refreshDeleteProgress() {
   if (!deleteProgressTaskId) return;
@@ -1716,16 +1730,24 @@ async function refreshDeleteProgress() {
 
     updateDeleteProgressUI(current, total);
 
-    if (data.status === 'done') {
+    if (data.status === 'running') {
+      const now = Date.now();
+      if (now - _lastTreeRefresh > 1000) {
+        _lastTreeRefresh = now;
+        loadTree();
+      }
+    }
+
+    if (data.status === 'done' || data.status === 'partial') {
       stopDeleteProgressPolling();
       hideDeleteProgressDialog();
-      showDeleteProgressToast(true);
+      showDeleteProgressToast(data.status, data.error);
       showEmptyState();
       loadTree();
     } else if (data.status === 'error') {
       stopDeleteProgressPolling();
       hideDeleteProgressDialog();
-      showDeleteProgressToast(false);
+      showDeleteProgressToast('error', data.error);
       showEmptyState();
       loadTree();
     }
@@ -1738,6 +1760,7 @@ function startDeleteProgressPolling(taskId, total) {
   stopDeleteProgressPolling();
   deleteProgressTaskId = taskId;
   deleteProgressTotal = total;
+  _lastTreeRefresh = 0;
   deleteProgressTimer = setInterval(refreshDeleteProgress, 500);
   refreshDeleteProgress();
 }
@@ -1790,20 +1813,27 @@ function hideDeleteProgressDialog() {
   if (dialog) dialog.style.display = 'none';
 }
 
-function showDeleteProgressToast(success) {
+function showDeleteProgressToast(status, errorMsg) {
   const statusEl = document.getElementById('deleteProgressStatus');
   if (!statusEl) return;
 
-  if (success) {
+  if (status === 'done') {
     statusEl.innerHTML = `<span class="delete-progress-label" style="color:var(--success)">${__('Deletion complete')}</span>`;
+  } else if (status === 'partial') {
+    const msg = errorMsg ? __('Deletion complete with errors: {0}', errorMsg) : __('Deletion complete with errors');
+    statusEl.innerHTML = `<span class="delete-progress-label" style="color:var(--warning)">${msg}</span>`;
   } else {
-    statusEl.innerHTML = `<span class="delete-progress-label" style="color:var(--danger)">${__('Deletion failed')}</span>`;
+    const msg = errorMsg ? __('Deletion failed: {0}', errorMsg) : __('Deletion failed');
+    statusEl.innerHTML = `<span class="delete-progress-label" style="color:var(--danger)">${msg}</span>`;
   }
   statusEl.style.display = 'inline-flex';
+}
 
-  setTimeout(() => {
+function clearDeleteProgressStatus() {
+  const statusEl = document.getElementById('deleteProgressStatus');
+  if (statusEl) {
     statusEl.style.display = 'none';
-  }, 5000);
+  }
 }
 
 async function refreshServerStatusBar() {

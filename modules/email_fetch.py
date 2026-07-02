@@ -1100,7 +1100,11 @@ def delete_from_server(server_config: dict, server_uid: str) -> dict:
     """Delete a single email from the server by UID (IMAP) or UIDL (POP3).
 
     * POP3: uses UIDL to locate the message number, then DELE.
-    * IMAP: uses UID STORE +FLAGS \\Deleted, then EXPUNGE.
+    * IMAP: uses UID STORE +FLAGS \Deleted, then EXPUNGE.
+
+    When the UID no longer exists on the server (e.g. already deleted
+    externally), returns success=True with skipped=True — the email
+    is already gone from the server so no action is needed.
 
     Args:
         server_config: email_servers row dict (must include incoming_server,
@@ -1108,7 +1112,8 @@ def delete_from_server(server_config: dict, server_uid: str) -> dict:
         server_uid: The IMAP UID or POP3 UIDL of the message to delete.
 
     Returns:
-        dict with "success" bool and optional "error" string.
+        dict with "success" bool.
+        If the UID was not found on the server, also includes "skipped": True.
     """
     protocol = server_config["incoming_protocol"].upper()
 
@@ -1141,7 +1146,8 @@ def delete_from_server(server_config: dict, server_uid: str) -> dict:
 
             if msg_num is None:
                 server.quit()
-                return {"success": False, "error": f"UIDL {server_uid} not found on server"}
+                # UIDL not found — email already gone from server, treat as success
+                return {"success": True, "skipped": True}
 
             server.dele(msg_num)
             server.quit()
@@ -1170,13 +1176,23 @@ def delete_from_server(server_config: dict, server_uid: str) -> dict:
             server.select("INBOX")
 
             # Mark the message as deleted by UID, then expunge
-            server.uid("STORE", server_uid, "+FLAGS", "\\Deleted")
+            typ, data = server.uid("STORE", server_uid, "+FLAGS", "\\Deleted")
+            if typ == "NO":
+                # UID not recognised by server — already gone, treat as success
+                server.close()
+                server.logout()
+                return {"success": True, "skipped": True}
             server.expunge()
 
             server.close()
             server.logout()
             return {"success": True}
 
+        except imaplib.IMAP4.error as e:
+            err_str = str(e).lower()
+            if "invalid" in err_str or "not found" in err_str or "does not exist" in err_str:
+                return {"success": True, "skipped": True}
+            return {"success": False, "error": str(e)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

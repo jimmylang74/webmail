@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
@@ -839,7 +840,7 @@ def api_mailbox_tree():
         )
         for sg in cursor.fetchall():
             cursor.execute(
-                "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge "
+                "SELECT id, sender, sender_name, subject, received_date, is_read, server_badge, importance_group_id "
                 "FROM emails WHERE user_id=? AND folder=? AND sender_group_id=? "
                 "ORDER BY received_date DESC LIMIT 50",
                 (user_id, folder_name, sg["id"]),
@@ -855,10 +856,12 @@ def api_mailbox_tree():
                     "is_read": em["is_read"],
                     "received_date": em["received_date"],
                     "server_badge": em["server_badge"],
+                    "imp_group_id": em["importance_group_id"],
                     "type": "email",
                 }
                 for em in cursor.fetchall()
             ]
+            sg_imp_id = email_children[0]["imp_group_id"] if email_children else None
             children.append({
                 "id": f"{folder_name}_sg_{sg['id']}",
                 "name": sg["group_name"],
@@ -867,6 +870,7 @@ def api_mailbox_tree():
                 "icon": "user",
                 "count": sg["cnt"],
                 "sender_group_id": sg["id"],
+                "imp_group_id": sg_imp_id,
                 "children": email_children,
             })
         cursor.execute(
@@ -974,6 +978,7 @@ def api_mailbox_tree():
                         }
                         for em in cursor.fetchall()
                     ]
+                    sg_imp_id = email_children[0]["imp_group_id"] if email_children else None
                     children.append({
                         "id": f"cf_{cf['id']}_sg_{sg['id']}",
                         "name": sg["group_name"],
@@ -983,6 +988,7 @@ def api_mailbox_tree():
                         "icon": "user",
                         "count": sg["cnt"],
                         "sender_group_id": sg["id"],
+                        "imp_group_id": sg_imp_id,
                         "children": email_children,
                     })
                 cursor.execute(
@@ -1326,20 +1332,34 @@ def api_delete_group_emails(sender_group_id):
     """Move all emails in a sender group to trash.
 
     Query param: delete_from_server=1  — also delete from server for each email.
+    Query param: imp_group_id=N       — only delete emails in this importance group.
     """
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
+    imp_group_id = request.args.get("imp_group_id", type=int)
 
-    cursor.execute(
-        "SELECT id, server_id, server_uid, folder FROM emails WHERE sender_group_id=? AND user_id=?",
-        (sender_group_id, session["user_id"]),
-    )
+    if imp_group_id:
+        cursor.execute(
+            "SELECT id, server_id, server_uid, folder FROM emails WHERE sender_group_id=? AND user_id=? AND importance_group_id=?",
+            (sender_group_id, session["user_id"], imp_group_id),
+        )
+    else:
+        cursor.execute(
+            "SELECT id, server_id, server_uid, folder FROM emails WHERE sender_group_id=? AND user_id=?",
+            (sender_group_id, session["user_id"]),
+        )
     rows = cursor.fetchall()
 
-    cursor.execute(
-        "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=?",
-        (sender_group_id, session["user_id"]),
-    )
+    if imp_group_id:
+        cursor.execute(
+            "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=? AND importance_group_id=?",
+            (sender_group_id, session["user_id"], imp_group_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=?",
+            (sender_group_id, session["user_id"]),
+        )
     conn.commit()
     deleted = cursor.rowcount
 
@@ -1383,41 +1403,55 @@ def api_delete_group_emails_with_progress(sender_group_id):
     """Delete all emails in a sender group with progress tracking.
 
     Query param: delete_from_server=1 — also delete from server for each email.
+    Query param: imp_group_id=N       — only delete emails in this importance group.
     Returns a task_id immediately; frontend polls GET /api/delete-progress/<task_id>.
     """
     conn = get_user_db(session["user_id"])
     cursor = conn.cursor()
+    imp_group_id = request.args.get("imp_group_id", type=int)
 
-    cursor.execute(
-        "SELECT id, server_id, server_uid, folder "
-        "FROM emails WHERE sender_group_id=? AND user_id=?",
-        (sender_group_id, session["user_id"]),
-    )
+    if imp_group_id:
+        cursor.execute(
+            "SELECT id, server_id, server_uid, folder "
+            "FROM emails WHERE sender_group_id=? AND user_id=? AND importance_group_id=?",
+            (sender_group_id, session["user_id"], imp_group_id),
+        )
+    else:
+        cursor.execute(
+            "SELECT id, server_id, server_uid, folder "
+            "FROM emails WHERE sender_group_id=? AND user_id=?",
+            (sender_group_id, session["user_id"]),
+        )
     rows = cursor.fetchall()
-
-    # Move to deleted folder synchronously so the tree can refresh immediately
-    cursor.execute(
-        "UPDATE emails SET folder='deleted' WHERE sender_group_id=? AND user_id=?",
-        (sender_group_id, session["user_id"]),
-    )
-    conn.commit()
 
     delete_from_server_flag = request.args.get("delete_from_server", "0") == "1"
 
-    server_delete_total = 0
+    # Split: emails that can't be server-deleted move to deleted now;
+    #        emails that need server deletion go to background thread.
+    noop_row_ids = []
     server_rows = []
-    if delete_from_server_flag:
-        for row in rows:
-            if row["folder"] != "drafts" and row["server_uid"] and row["server_id"]:
-                server_delete_total += 1
-                server_rows.append(row)
+    for row in rows:
+        if delete_from_server_flag and row["folder"] != "drafts" and row["server_uid"] and row["server_id"]:
+            server_rows.append(row)
+        else:
+            noop_row_ids.append(row["id"])
+
+    # Instantly move emails that don't need server deletion
+    if noop_row_ids:
+        placeholders = ",".join("?" * len(noop_row_ids))
+        cursor.execute(
+            f"UPDATE emails SET folder='deleted' WHERE id IN ({placeholders}) AND user_id=?",
+            (*noop_row_ids, session["user_id"]),
+        )
+
+    conn.commit()
 
     task_id = str(uuid.uuid4())
 
-    if server_delete_total > 0:
+    if server_rows:
         with _delete_progress_lock:
             _delete_progress[task_id] = {
-                "total": server_delete_total,
+                "total": len(server_rows),
                 "current": 0,
                 "status": "running",
                 "error": None,
@@ -1431,9 +1465,9 @@ def api_delete_group_emails_with_progress(sender_group_id):
 
     conn.close()
     return jsonify({
-        "task_id": task_id if server_delete_total > 0 else None,
+        "task_id": task_id if server_rows else None,
         "total": len(rows),
-        "server_delete_total": server_delete_total,
+        "server_delete_total": len(server_rows),
     })
 
 
@@ -1454,7 +1488,7 @@ def api_delete_progress(task_id):
     if entry.get("error"):
         resp["error"] = entry["error"]
 
-    if entry["status"] in ("done", "error"):
+    if entry["status"] in ("done", "partial", "error"):
         with _delete_progress_lock:
             _delete_progress.pop(task_id, None)
 
@@ -2748,17 +2782,45 @@ def _background_delete_group_emails(
                             "password": srv["password"],
                             "use_ssl": srv["use_ssl"],
                         }
-                        delete_from_server(sc, row["server_uid"])
+                        last_error = None
+                        for attempt in range(3):
+                            result = delete_from_server(sc, row["server_uid"])
+                            if result.get("success"):
+                                last_error = None
+                                break
+                            last_error = result.get("error", "Unknown error")
+                            if attempt < 2:
+                                time.sleep(2)
+
+                        if last_error:
+                            with _delete_progress_lock:
+                                entry = _delete_progress.get(task_id)
+                                if entry:
+                                    entry.setdefault("failed", 0)
+                                    entry["failed"] += 1
+                                    entry.setdefault("errors", [])
+                                    entry["errors"].append(
+                                        f"Email {row['id']} (UID {row['server_uid']}): {last_error}"
+                                    )
+                        else:
+                            cursor.execute(
+                                "UPDATE emails SET folder='deleted' WHERE id=? AND user_id=?",
+                                (row["id"], user_id),
+                            )
+                            conn.commit()
 
                 with _delete_progress_lock:
                     entry = _delete_progress.get(task_id)
                     if entry:
-                        entry["current"] += 1
+	                        entry["current"] += 1
 
         with _delete_progress_lock:
             entry = _delete_progress.get(task_id)
             if entry:
-                entry["status"] = "done"
+                failed = entry.get("failed", 0)
+                entry["status"] = "done" if failed == 0 else "partial"
+                if failed > 0:
+                    entry["error"] = f"{failed} email(s) failed to delete from server"
 
         conn.close()
     except Exception as e:
